@@ -86,6 +86,7 @@ Qolgan muhim qiymatlar `render.yaml`da tayyor:
 - `INITIAL_PRICE=30000`
 - `APP_TIMEZONE=Asia/Tashkent`
 - `COOKIE_SECURE=true`
+- `LOCAL_PRINTER_AGENT_ENABLED=false`
 - `SUPABASE_DB_LIMIT_BYTES=524288000`
 
 `SUPABASE_DB_LIMIT_BYTES` monitoringdagi “limit/qolgan joy” hisobiga ishlatiladi. Supabase tarifingizdagi real limit boshqacha bo'lsa shu qiymatni baytlarda almashtiring. Haqiqiy ishlatilgan hajm bevosita PostgreSQL `pg_database_size`dan olinadi.
@@ -190,13 +191,14 @@ Muvaffaqiyatli yangi backupdan so'ng shu papkadagi oldingi `* holatiga backup.db
 
 To'lov tasdiqlanganda:
 
-1. Frontend lokal agentni `127.0.0.1:17832`da tekshiradi.
+1. Standart holatda chek brauzer orqali chiqariladi va `127.0.0.1`ga keraksiz so'rov yuborilmaydi.
 2. To'liq 80 mm chek ko'rinishi sayt ichidagi bloklanmaydigan preview oynasida ochiladi.
 3. Agent bo'lsa standart `windows` rejimida chek QR bilan bitmapga aylantirilib Windows printer drayveri orqali dialogsız yuboriladi. `escpos` rejimi faqat ESC/POS tilini tushunadigan printerlar uchun.
 4. Agent yoki printer mavjud bo'lmasa preview ichidan brauzer chop etish dialogi avtomatik ochiladi. Preview'dagi **Chekni Chop Etish** tugmasi bilan qayta urinish mumkin.
 5. Admin qidiruv/tarix bo'limidan to'langan chekni istalgan vaqtda qayta chiqarishi mumkin.
 
 Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
+Dialogsız Windows printer rejimi kerak bo'lsa lokal agentni o'rnatib, Render'da `LOCAL_PRINTER_AGENT_ENABLED=true` qiling.
 
 ## Rollar
 

@@ -51,6 +51,9 @@ SESSION_SECRET = os.getenv("SECRET_KEY", "").strip() or hashlib.sha256(
 ).hexdigest()
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Tashkent"))
 DB_POOL_SIZE = max(1, min(int(os.getenv("DB_POOL_SIZE", "5")), 20))
+LOCAL_PRINTER_AGENT_ENABLED = os.getenv(
+    "LOCAL_PRINTER_AGENT_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 SUPABASE_DB_LIMIT_BYTES = max(
     1,
     int(os.getenv("SUPABASE_DB_LIMIT_BYTES", str(500 * 1024 * 1024))),
@@ -240,7 +243,12 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     if request.endpoint != "static":
         response.headers.setdefault("Cache-Control", "no-store")
-    response.headers["X-Frame-Options"] = "DENY"
+    embedded_receipt = (
+        request.endpoint == "receipt_page"
+        and request.args.get("embedded") == "1"
+    )
+    frame_ancestors = "'self'" if embedded_receipt else "'none'"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if embedded_receipt else "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
@@ -249,7 +257,8 @@ def add_security_headers(response):
         "style-src 'self'; "
         "script-src 'self'; "
         "connect-src 'self' http://127.0.0.1:17832; "
-        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        f"frame-ancestors {frame_ancestors}; "
+        "base-uri 'self'; form-action 'self'"
     )
     if request.is_secure:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -596,7 +605,12 @@ def logout():
 def index():
     if g.user["role"] in ADMIN_ROLES:
         return redirect(url_for("admin_page"))
-    return render_template("kiosk.html", user=g.user, company=COMPANY_NAME)
+    return render_template(
+        "kiosk.html",
+        user=g.user,
+        company=COMPANY_NAME,
+        local_printer_agent=LOCAL_PRINTER_AGENT_ENABLED,
+    )
 
 
 @app.get("/admin")
@@ -604,7 +618,11 @@ def index():
 def admin_page():
     default_tab = "monitor" if g.user["role"] == "techadmin" else "dashboard"
     return render_template(
-        "admin.html", user=g.user, company=COMPANY_NAME, default_tab=default_tab
+        "admin.html",
+        user=g.user,
+        company=COMPANY_NAME,
+        default_tab=default_tab,
+        local_printer_agent=LOCAL_PRINTER_AGENT_ENABLED,
     )
 
 
