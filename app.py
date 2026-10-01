@@ -397,7 +397,10 @@ def serialize_weighing(row: dict) -> dict:
 
 
 def can_access_weighing(row: dict) -> bool:
-    return g.user["role"] in ADMIN_ROLES or row.get("created_by") == g.user["id"]
+    if g.user["role"] in ADMIN_ROLES:
+        return True
+    business_date = row.get("business_date")
+    return business_date in {now_local().date(), now_local().date() - timedelta(days=1)}
 
 
 def make_qr_base64(text: str) -> str:
@@ -688,6 +691,57 @@ def recent_plates():
     return jsonify(success=True, plates=[row["plate_number"] for row in rows])
 
 
+@app.get("/api/operator/weighings")
+@login_required
+def operator_weighings():
+    day_key = request.args.get("day", "today")
+    if day_key not in {"today", "yesterday"}:
+        return jsonify(success=False, message="Faqat bugun yoki kechagi ma'lumot mumkin"), 400
+    target_date = now_local().date() - (timedelta(days=1) if day_key == "yesterday" else timedelta())
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+        per_page = int(request.args.get("per_page", "15"))
+    except ValueError:
+        return jsonify(success=False, message="Sahifa qiymati noto'g'ri"), 400
+    if per_page not in {10, 15, 20, 50, 100}:
+        per_page = 15
+    conditions = ["w.business_date = %s"]
+    params: list = [target_date]
+    query = (request.args.get("q") or "").strip().upper()
+    if query:
+        plate_search = re.sub(r"[^0-9A-ZА-ЯЁЎҚҒҲ]", "", query)
+        conditions.append("(w.plate_search LIKE %s OR UPPER(w.receipt_no) LIKE %s)")
+        params.extend((f"%{plate_search}%", f"%{query}%"))
+    status = request.args.get("status", "")
+    if status in {"pending", "paid", "cancelled"}:
+        conditions.append("w.status = %s")
+        params.append(status)
+    offset = (page - 1) * per_page
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT w.*, u.username AS operator, COUNT(*) OVER() AS full_count
+            FROM weighings w
+            LEFT JOIN users u ON u.id = w.created_by
+            WHERE {' AND '.join(conditions)}
+            ORDER BY w.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (*params, per_page, offset),
+        ).fetchall()
+    total = rows[0]["full_count"] if rows else 0
+    return jsonify(
+        success=True,
+        results=[serialize_weighing(row) for row in rows],
+        date=target_date.isoformat(),
+        date_label=target_date.strftime("%d.%m.%Y"),
+        page=page,
+        per_page=per_page,
+        total=total,
+        total_pages=max(1, math.ceil(total / per_page)),
+    )
+
+
 @app.post("/api/weighings")
 @login_required
 def create_weighing():
@@ -926,9 +980,11 @@ def admin_dashboard():
 def admin_weighings():
     try:
         page = max(1, int(request.args.get("page", "1")))
-        per_page = max(5, min(int(request.args.get("per_page", "20")), 100))
+        per_page = int(request.args.get("per_page", "15"))
     except ValueError:
         return jsonify(success=False, message="Sahifa qiymati noto'g'ri"), 400
+    if per_page not in {10, 15, 20, 50, 100}:
+        per_page = 15
 
     conditions = ["1=1"]
     params: list = []
@@ -981,10 +1037,15 @@ def admin_report():
     try:
         start = parse_date(request.args.get("start", ""), "Boshlanish sanasi")
         end = parse_date(request.args.get("end", ""), "Tugash sanasi")
+        page = max(1, int(request.args.get("page", "1")))
+        per_page = int(request.args.get("per_page", "15"))
     except ValueError as exc:
         return jsonify(success=False, message=str(exc)), 400
+    if per_page not in {10, 15, 20, 50, 100}:
+        per_page = 15
     if end < start or (end - start).days > 3660:
         return jsonify(success=False, message="Sana oralig'i noto'g'ri"), 400
+    offset = (page - 1) * per_page
     with get_pool().connection() as conn:
         rows = conn.execute(
             """
@@ -993,9 +1054,21 @@ def admin_report():
             WHERE business_date BETWEEN %s AND %s AND status = 'paid'
             GROUP BY business_date
             ORDER BY business_date DESC
+            LIMIT %s OFFSET %s
+            """,
+            (start, end, per_page, offset),
+        ).fetchall()
+        summary = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_count,
+                COUNT(DISTINCT business_date) AS total_days,
+                COALESCE(SUM(price), 0) AS total_revenue
+            FROM weighings
+            WHERE business_date BETWEEN %s AND %s AND status = 'paid'
             """,
             (start, end),
-        ).fetchall()
+        ).fetchone()
         methods = conn.execute(
             """
             SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(price), 0) AS total
@@ -1016,13 +1089,18 @@ def admin_report():
             """,
             (start, end),
         ).fetchone()
-    total_count = sum(row["count"] for row in rows)
-    total_revenue = sum(row["total"] for row in rows)
+    total_count = summary["total_count"]
+    total_days = summary["total_days"]
+    total_revenue = summary["total_revenue"]
     return jsonify(
         success=True,
         total_count=total_count,
+        total_days=total_days,
         total_revenue=total_revenue,
         total_fmt=money(total_revenue),
+        page=page,
+        per_page=per_page,
+        total_pages=max(1, math.ceil(total_days / per_page)),
         service_totals={
             "weighing": service_totals["weighing"],
             "weighing_fmt": money(service_totals["weighing"]),
@@ -1426,16 +1504,32 @@ def update_price_setting():
 @app.get("/api/admin/users")
 @roles_required("techadmin")
 def list_users():
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+        per_page = int(request.args.get("per_page", "15"))
+    except ValueError:
+        return jsonify(success=False, message="Sahifa qiymati noto'g'ri"), 400
+    if per_page not in {10, 15, 20, 50, 100}:
+        per_page = 15
+    offset = (page - 1) * per_page
     with get_pool().connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, username, role, is_active, created_at, last_login_at
+            SELECT id, username, role, is_active, created_at, last_login_at,
+                   COUNT(*) OVER() AS full_count
             FROM users
             ORDER BY username
-            """
+            LIMIT %s OFFSET %s
+            """,
+            (per_page, offset),
         ).fetchall()
+    total = rows[0]["full_count"] if rows else 0
     return jsonify(
         success=True,
+        page=page,
+        per_page=per_page,
+        total=total,
+        total_pages=max(1, math.ceil(total / per_page)),
         users=[
             {
                 "id": row["id"],
@@ -1615,7 +1709,7 @@ def backup_token_required(view):
     return wrapped
 
 
-def create_sqlite_backup() -> str:
+def create_sqlite_backup(include_users: bool = True) -> str:
     handle = tempfile.NamedTemporaryFile(prefix="tarozi-backup-", suffix=".db", delete=False)
     path = handle.name
     handle.close()
@@ -1674,23 +1768,24 @@ def create_sqlite_backup() -> str:
             ],
         )
         with get_pool().connection() as conn:
-            users = conn.execute(
-                """
-                SELECT id, username, password_hash, role, is_active, created_at, last_login_at
-                FROM users ORDER BY id
-                """
-            ).fetchall()
-            backup.executemany(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        row["id"], row["username"], row["password_hash"], row["role"],
-                        int(row["is_active"]), row["created_at"].isoformat(),
-                        row["last_login_at"].isoformat() if row["last_login_at"] else None,
-                    )
-                    for row in users
-                ],
-            )
+            if include_users:
+                users = conn.execute(
+                    """
+                    SELECT id, username, password_hash, role, is_active, created_at, last_login_at
+                    FROM users ORDER BY id
+                    """
+                ).fetchall()
+                backup.executemany(
+                    "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            row["id"], row["username"], row["password_hash"], row["role"],
+                            int(row["is_active"]), row["created_at"].isoformat(),
+                            row["last_login_at"].isoformat() if row["last_login_at"] else None,
+                        )
+                        for row in users
+                    ],
+                )
             settings = conn.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
             backup.executemany(
                 "INSERT INTO settings (key, value) VALUES (?, ?)",
@@ -1750,8 +1845,8 @@ def create_sqlite_backup() -> str:
             pass
 
 
-def send_sqlite_backup():
-    path = create_sqlite_backup()
+def send_sqlite_backup(include_users: bool = True):
+    path = create_sqlite_backup(include_users=include_users)
     filename = f"{now_local().strftime('%d.%m.%Y')} 00-00 holatiga backup.db"
     response = send_file(
         path,
@@ -1768,6 +1863,47 @@ def send_sqlite_backup():
 @roles_required("techadmin")
 def manual_backup_download():
     return send_sqlite_backup()
+
+
+@app.get("/api/backup/download")
+@login_required
+def user_backup_download():
+    return send_sqlite_backup(include_users=False)
+
+
+@app.post("/api/admin/clear-operational-data")
+@roles_required("techadmin")
+def clear_operational_data():
+    data = request.get_json(silent=True) or {}
+    if data.get("confirmation") != "BARCHASINI OCHIRISH":
+        return jsonify(
+            success=False,
+            message="Tasdiqlash maydoniga BARCHASINI OCHIRISH deb yozing",
+        ), 400
+    password = data.get("password") or ""
+    with get_pool().connection() as conn:
+        techadmin = conn.execute(
+            "SELECT password_hash FROM users WHERE id = %s AND role = 'techadmin' AND is_active",
+            (g.user["id"],),
+        ).fetchone()
+        if not techadmin or not check_password_hash(techadmin["password_hash"], password):
+            return jsonify(success=False, message="Techadmin paroli noto'g'ri"), 403
+        counts = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM weighings) AS weighings,
+                (SELECT COUNT(*) FROM import_batches) AS imports
+            """
+        ).fetchone()
+        conn.execute(
+            "TRUNCATE TABLE weighings, import_batches, daily_sequences RESTART IDENTITY"
+        )
+    return jsonify(
+        success=True,
+        deleted_weighings=counts["weighings"],
+        deleted_imports=counts["imports"],
+        message="Barcha tarozi va pul operatsiyalari tozalandi",
+    )
 
 
 @app.get("/api/admin/system-status")

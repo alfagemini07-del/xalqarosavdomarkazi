@@ -6,12 +6,13 @@ AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi G
 
 - Barcha sahifalardan oldin majburiy login.
 - `operator`, `admin`, `techadmin` rollari.
-- Operator loginidan keyin to'g'ridan-to'g'ri kiosk: vaznni kilogrammda qo'lda kiritish, xizmatlarni tanlash, to'lovni tasdiqlash va chek chiqarish.
+- Operator loginidan keyin to'g'ridan-to'g'ri kiosk: vaznni kilogrammda qo'lda kiritish, xizmatlarni tanlash, to'lovni tasdiqlash va chek chiqarish. Operator bugungi hamda kechagi operatsiyalarni qidirib, cheklarini qayta ko'ra oladi.
 - Admin loginidan keyin alohida admin dashboard: hisobot, qidiruv, tarix, CSV/Excel eksport va eski SQLite import.
-- Techadmin loginidan keyin alohida texnik monitoring dashboardi: narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, backup tokenlari va tizim monitoringi.
+- Techadmin loginidan keyin alohida texnik monitoring dashboardi: narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, operatsion bazani himoyalangan tarzda tozalash va tizim monitoringi.
+- Operator, admin va techadmin jadvallarida server tomondagi qidiruv hamda 10/15/20/50/100 talik sahifalash mavjud.
 - Ochiq qurilmalar Supabase'dagi o'zgarish versiyasini yengil so'rov bilan kuzatadi; faqat o'zgarish bo'lganda ko'rinayotgan ma'lumot yangilanadi va kiritilayotgan matn saqlanadi.
 - Vazn o'lchash, hududga kirganlik va qayta yuklash narxlari alohida saqlanadi; techadmin uchalasini ham o'zgartiradi.
-- Chekda avtomobil vazni, har bir tanlangan xizmat va yakuniy summa alohida ko'rsatiladi. QR kod login talab qilmaydigan, maxfiy tokenli elektron chekni telefonda ochadi.
+- Chekda avtomobil vazni, har bir tanlangan xizmat va yakuniy summa alohida ko'rsatiladi. QR kod saytga yo'naltirmaydi: skaner qilinganda mashina, vazn, vaqt va barcha to'lovlar telefonning o'zida oddiy matn sifatida ko'rinadi.
 - Sessiya bir qurilmada yangilanib turadi va faqat foydalanuvchi chiqish tugmasini bosganda yopiladi.
 - Parollar `scrypt` bilan xeshlanadi. Amaldagi parolni ko'rib bo'lmaydi; techadmin faqat yangi parol o'rnatadi.
 - To'langan yozuv o'chirilmaydi. Kutilayotgan operatsiya bekor qilinsa `cancelled` holatiga o'tadi.
@@ -126,7 +127,11 @@ Maksimal upload hajmi 256 MB.
 
 ## 5. Qo'lda backup
 
-Techadmin → **Import va Backup** → **Zaxira Nusxa (.db)**.
+Operator asosiy oynasidagi **Backup olish** tugmasini bosadi. Chrome yoki Edge papka tanlash oynasini ochadi va tayyor `.db` fayl aynan tanlangan papkaga yoziladi. Brauzer papka tanlash API'sini qo'llamasa, fayl odatiy **Downloads** papkasiga yuklanadi. Bu amal uchun token kerak emas.
+
+Operator backupida parol xeshlari bo'lmaydi, ammo barcha tarozi va to'lov ma'lumotlari hamda xizmat sozlamalari bo'ladi. Shu faylni keyin **Import va Backup** bo'limi orqali qayta import qilish mumkin.
+
+Techadmin → **Import va Backup** → **Zaxira Nusxa (.db)** orqali foydalanuvchi xeshlari bilan to'liq server backupini ham olishi mumkin.
 
 Server ayni paytdagi foydalanuvchilar (faqat xavfsiz xeshlar), sozlamalar va barcha operatsiyalarni portable SQLite faylga yozib yuklatadi.
 
@@ -147,7 +152,7 @@ Talablar:
 - printer Windows'da o'rnatilgan; imkon qadar default printer qiling;
 - agent fayllari doimiy papkada turishi kerak.
 
-Techadmin → **Sozlamalar** → **Lokal backup agenti tokenlari** ichida token yarating va darhol nusxalang. Token keyin qayta ko'rsatilmaydi.
+Techadmin → **Sozlamalar** → **Avtomatik tungi backup agenti (ixtiyoriy)** bo'limini ochib token yarating va darhol nusxalang. Token keyin qayta ko'rsatilmaydi. Bu token faqat avtomatik agent uchun; saytdagi oddiy backup tugmasiga kerak emas.
 
 PowerShell'ni oching:
 
@@ -199,6 +204,8 @@ Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 | Funksiya | Operator | Admin | Techadmin |
 |---|:---:|:---:|:---:|
 | Kiosk va chek | ✓ | — | — |
+| Bugun/kecha jurnali va cheklarni ko'rish | ✓ | — | — |
+| Tokensiz `.db` backup | ✓ | ✓ | ✓ |
 | O'zining dashboardi/hisobot/qidiruv | — | ✓ | ✓ |
 | SQLite import | — | ✓ | ✓ |
 | Qo'lda to'liq backup | — | — | ✓ |
@@ -206,6 +213,7 @@ Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 | Login/parol/rollarni boshqarish | — | — | ✓ |
 | Supabase/Render monitoring | — | — | ✓ |
 | Backup tokenlari | — | — | ✓ |
+| Operatsion bazani tozalash | — | — | ✓ |
 
 ## Muhim eslatmalar
 
