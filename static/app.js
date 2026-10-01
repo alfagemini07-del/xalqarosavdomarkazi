@@ -27,7 +27,19 @@
   let journalRequestId = 0;
   let receiptPrintPending = false;
   let localAgentReady = false;
-  const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/\u00a0/g, " ");
+  const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ");
+
+  function moneyInputValue(input) {
+    const digits = String(input.value || "").replace(/\D/g, "");
+    return digits ? Number(digits) : 0;
+  }
+
+  function formatMoneyInput(input) {
+    let digits = String(input.value || "").replace(/\D/g, "").slice(0, 10);
+    digits = digits.replace(/^0+(?=\d)/, "");
+    input.value = digits ? fmt(Number(digits)) : "";
+    return digits ? Number(digits) : 0;
+  }
 
   async function api(url, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -237,7 +249,7 @@
   }
 
   function validServiceAmount(checkbox, input, errorId, showError = false) {
-    const value = Number(input.value);
+    const value = moneyInputValue(input);
     const valid = !checkbox.checked || (Number.isInteger(value) && value >= 1 && value <= 1000000000);
     const error = document.getElementById(errorId);
     error.classList.toggle("error", showError && !valid);
@@ -255,8 +267,8 @@
   function renderPricing() {
     if (!current) return;
     const base = Number(current.weighing_fee ?? current.price ?? servicePrices.weighing);
-    const entry = entryService.checked ? Math.max(0, Number(entryFeeInput.value) || 0) : 0;
-    const reload = reloadService.checked ? Math.max(0, Number(reloadFeeInput.value) || 0) : 0;
+    const entry = entryService.checked ? Math.max(0, moneyInputValue(entryFeeInput)) : 0;
+    const reload = reloadService.checked ? Math.max(0, moneyInputValue(reloadFeeInput)) : 0;
     const total = base + entry + reload;
     const weight = Math.max(0, Number(weightInput.value) || 0);
     document.getElementById("payment-price").textContent = fmt(base);
@@ -381,7 +393,7 @@
     payButton.textContent = "To'lov saqlanmoqda...";
     try {
       const weighingId = current.id;
-      const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, entry_fee: entryService.checked ? Number(entryFeeInput.value) : 0, reload_service: reloadService.checked, reload_fee: reloadService.checked ? Number(reloadFeeInput.value) : 0 }) });
+      const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, entry_fee: entryService.checked ? moneyInputValue(entryFeeInput) : 0, reload_service: reloadService.checked, reload_fee: reloadService.checked ? moneyInputValue(reloadFeeInput) : 0 }) });
       document.getElementById("payment-status-badge").textContent = "To'langan";
       document.getElementById("payment-status-badge").className = "badge paid";
       document.getElementById("receipt-status").textContent = "TO'LANGAN";
@@ -454,8 +466,10 @@
     document.getElementById("receipt-payment-type").textContent = { cash: "NAQD PUL", card: "UZCARD / HUMO", bank: "HISOB RAQAM" }[paymentMethod];
   }));
   weightInput.addEventListener("input", () => { if (weightInput.value.length > 7) weightInput.value = weightInput.value.slice(0, 7); validWeight(false); renderPricing(); });
-  entryFeeInput.addEventListener("input", () => { if (entryFeeInput.value.length > 10) entryFeeInput.value = entryFeeInput.value.slice(0, 10); validServiceAmount(entryService, entryFeeInput, "entry-fee-error", false); renderPricing(); });
-  reloadFeeInput.addEventListener("input", () => { if (reloadFeeInput.value.length > 10) reloadFeeInput.value = reloadFeeInput.value.slice(0, 10); validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", false); renderPricing(); });
+  entryFeeInput.addEventListener("input", () => { formatMoneyInput(entryFeeInput); validServiceAmount(entryService, entryFeeInput, "entry-fee-error", false); renderPricing(); });
+  reloadFeeInput.addEventListener("input", () => { formatMoneyInput(reloadFeeInput); validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", false); renderPricing(); });
+  entryFeeInput.addEventListener("focus", () => entryFeeInput.select());
+  reloadFeeInput.addEventListener("focus", () => reloadFeeInput.select());
   entryService.addEventListener("change", () => toggleServiceEditor(entryService, "entry-fee-panel", entryFeeInput, "entry-fee-error"));
   reloadService.addEventListener("change", () => toggleServiceEditor(reloadService, "reload-fee-panel", reloadFeeInput, "reload-fee-error"));
   paidCheck.addEventListener("change", updatePayAvailability);
