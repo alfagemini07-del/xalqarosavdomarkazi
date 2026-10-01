@@ -12,6 +12,9 @@
   let resetUserId = null;
   let selectedDetail = null;
   let monitorTimer = null;
+  let activeTab = document.body.dataset.defaultTab || (role === "techadmin" ? "monitor" : "dashboard");
+  let lastSyncVersion = null;
+  let syncBusy = false;
 
   async function api(url, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -100,8 +103,8 @@
     const action = document.createElement("td"); action.append(actionButton("Ko'rish", () => openDetail(item))); if (item.status === "paid") action.append(actionButton("▤ Chek", event => reprint(item.id, event.currentTarget), "secondary")); row.append(action); return row;
   }
 
-  async function loadHistory() {
-    const body = document.getElementById("history-body"); emptyRow(body, 8, "Yuklanmoqda...");
+  async function loadHistory(silent = false) {
+    const body = document.getElementById("history-body"); if (!silent) emptyRow(body, 8, "Yuklanmoqda...");
     try { const data = await api(`/api/admin/weighings?page=${historyPage}&per_page=20`); historyPages = data.total_pages; body.replaceChildren(); if (!data.results.length) emptyRow(body, 8, "Ma'lumot topilmadi"); else data.results.forEach((item, i) => body.append(buildRow(item, i, historyPage))); document.getElementById("history-page-info").textContent = `${data.page} / ${data.total_pages}`; document.getElementById("history-prev").disabled = data.page <= 1; document.getElementById("history-next").disabled = data.page >= data.total_pages; }
     catch (error) { emptyRow(body, 8, error.message); }
   }
@@ -111,8 +114,8 @@
     const values = { plate: document.getElementById("search-plate").value.trim(), start: document.getElementById("search-start").value, end: document.getElementById("search-end").value, status: document.getElementById("search-status").value };
     Object.entries(values).forEach(([key, value]) => { if (value) params.set(key, value); }); return params;
   }
-  async function doSearch() {
-    const body = document.getElementById("search-body"); emptyRow(body, 8, "Qidirilmoqda...");
+  async function doSearch(silent = false) {
+    const body = document.getElementById("search-body"); if (!silent) emptyRow(body, 8, "Qidirilmoqda...");
     try {
       const data = await api(`/api/admin/weighings?${searchParams()}`); searchPages = data.total_pages; body.replaceChildren(); if (!data.results.length) emptyRow(body, 8, "Ma'lumot topilmadi"); else data.results.forEach((item, i) => body.append(buildRow(item, i, searchPage)));
       document.getElementById("search-page-info").textContent = `${data.page} / ${data.total_pages}`; document.getElementById("search-prev").disabled = data.page <= 1; document.getElementById("search-next").disabled = data.page >= data.total_pages;
@@ -141,13 +144,13 @@
     document.getElementById("report-start").value = isoDate(start); document.getElementById("report-end").value = isoDate(end);
     document.querySelectorAll("[data-range]").forEach(button => button.classList.toggle("active", button.dataset.range === type));
   }
-  async function runReport() {
-    const button = document.getElementById("btn-report"); const start = document.getElementById("report-start").value; const end = document.getElementById("report-end").value; if (!start || !end) return showToast("Sana oralig'ini kiriting", true); setBusy(button, true);
+  async function runReport(silent = false) {
+    const button = document.getElementById("btn-report"); const start = document.getElementById("report-start").value; const end = document.getElementById("report-end").value; if (!start || !end) return; if (!silent) setBusy(button, true);
     try {
       const data = await api(`/api/admin/report?start=${start}&end=${end}`); reportData = [...data.daily].reverse(); document.getElementById("report-count").textContent = fmt(data.total_count); document.getElementById("report-total").textContent = data.total_fmt; document.getElementById("report-average").textContent = data.daily.length ? Math.round(data.total_count / data.daily.length) : 0;
       const cash = data.payment_methods.cash?.count || 0; const card = data.payment_methods.card?.count || 0; document.getElementById("report-methods").textContent = `${cash} / ${card}`; document.getElementById("report-period-label").textContent = `${start} — ${end}`;
       const body = document.getElementById("report-body"); body.replaceChildren(); if (!data.daily.length) emptyRow(body, 4, "Bu oraliqda ma'lumot yo'q"); else data.daily.forEach(item => { const row = document.createElement("tr"); row.append(td(item.date), td(`${item.count} ta`), td(`${item.total_fmt} so'm`), td(item.count ? `${fmt(Math.round(item.total / item.count))} so'm` : "0")); body.append(row); }); drawBarChart("report-chart", reportData);
-    } catch (error) { showToast(error.message, true); } finally { setBusy(button, false); }
+    } catch (error) { if (!silent) showToast(error.message, true); } finally { if (!silent) setBusy(button, false); }
   }
 
   function exportCsv(source) {
@@ -155,14 +158,24 @@
   }
 
   async function importDatabase() {
-    const input = document.getElementById("import-file"); const button = document.getElementById("btn-import"); const result = document.getElementById("import-result"); if (!input.files.length) return; const form = new FormData(); form.append("database", input.files[0]); setBusy(button, true, "Import qilinmoqda..."); result.classList.add("hidden");
-    try { const data = await api("/api/admin/import-sqlite", { method: "POST", body: form }); result.className = "alert success"; result.textContent = `Jami ${data.total} qator: ${data.inserted} ta import qilindi, ${data.skipped} ta takroriy o'tkazildi.`; showToast("Import muvaffaqiyatli yakunlandi"); loadDashboard(); }
-    catch (error) { result.className = "alert error"; result.textContent = error.message; }
+    const input = document.getElementById("import-file"); const button = document.getElementById("btn-import"); const result = document.getElementById("import-result"); if (!input.files.length) return;
+    const progress = document.getElementById("upload-progress"); const bar = document.getElementById("upload-progress-bar"); const percent = document.getElementById("upload-progress-percent"); const text = document.getElementById("upload-progress-text"); const form = new FormData(); form.append("database", input.files[0]);
+    setBusy(button, true, "Import qilinmoqda..."); result.classList.add("hidden"); progress.classList.remove("hidden", "processing"); bar.style.width = "0%"; percent.textContent = "0%"; text.textContent = "Fayl serverga yuklanmoqda...";
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest(); xhr.open("POST", "/api/admin/import-sqlite"); xhr.responseType = "json"; xhr.setRequestHeader("Accept", "application/json"); xhr.setRequestHeader("X-CSRF-Token", csrf);
+        xhr.upload.onprogress = event => { if (!event.lengthComputable) return; const value = Math.min(100, Math.round(event.loaded * 100 / event.total)); bar.style.width = `${value}%`; percent.textContent = `${value}%`; text.textContent = value < 100 ? "Fayl serverga yuklanmoqda..." : "Yuklandi. Ma'lumotlar Supabase'ga yozilmoqda..."; };
+        xhr.upload.onload = () => { bar.style.width = "100%"; percent.textContent = "100%"; text.textContent = "Yuklandi. Ma'lumotlar Supabase'ga yozilmoqda..."; progress.classList.add("processing"); };
+        xhr.onload = () => { const payload = xhr.response || {}; if (xhr.status === 401) { window.location.href = "/login"; return; } if (xhr.status < 200 || xhr.status >= 300 || payload.success === false) reject(new Error(payload.message || "Import bajarilmadi")); else resolve(payload); };
+        xhr.onerror = () => reject(new Error("Tarmoq xatosi: fayl yuklanmadi")); xhr.send(form);
+      });
+      progress.classList.remove("processing"); bar.style.width = "100%"; percent.textContent = "100%"; text.textContent = "Import yakunlandi"; result.className = "alert success"; result.textContent = `Jami ${data.total} qator: ${data.inserted} ta import qilindi, ${data.skipped} ta takroriy o'tkazildi.`; showToast("Import muvaffaqiyatli yakunlandi"); lastSyncVersion = null;
+    } catch (error) { progress.classList.remove("processing"); result.className = "alert error"; result.textContent = error.message; text.textContent = "Import to'xtadi"; }
     finally { result.classList.remove("hidden"); setBusy(button, false); }
   }
 
-  async function loadMonitor() {
-    if (role !== "techadmin") return; const button = document.getElementById("btn-refresh-monitor"); setBusy(button, true, "Tekshirilmoqda...");
+  async function loadMonitor(silent = false) {
+    if (role !== "techadmin") return; const button = document.getElementById("btn-refresh-monitor"); if (!silent) setBusy(button, true, "Tekshirilmoqda...");
     try {
       const data = await api("/api/admin/system-status"); const db = data.database; const server = data.server; systemData = data.activity;
       document.getElementById("monitor-overall").textContent = data.overall_status === "healthy" ? "Barcha tizimlar ishlamoqda" : "Tizim sekin ishlamoqda"; document.getElementById("monitor-checked").textContent = new Date(data.checked_at).toLocaleString("uz-UZ");
@@ -171,15 +184,16 @@
       document.getElementById("server-uptime").textContent = uptime(server.uptime_seconds); document.getElementById("server-memory").textContent = bytes(server.memory_bytes); document.getElementById("server-cpu").textContent = `${Number(server.cpu_percent).toFixed(1)}%`; document.getElementById("server-disk").textContent = `${Number(server.disk_used_percent).toFixed(1)}%`;
       document.getElementById("avg-response").textContent = `${server.avg_response_ms} ms`; document.getElementById("p95-response").textContent = `${server.p95_response_ms} ms`; document.getElementById("request-count").textContent = fmt(server.requests); document.getElementById("error-count").textContent = fmt(server.errors);
       document.getElementById("last-import").textContent = data.application.last_import ? `${data.application.last_import.filename} — ${data.application.last_import.inserted}/${data.application.last_import.total} qator` : "Hali import qilinmagan"; document.getElementById("app-version").textContent = data.application.version; document.getElementById("app-environment").textContent = data.application.environment; drawBarChart("system-chart", systemData, { highlightLast: true });
-    } catch (error) { showToast(error.message, true); document.getElementById("monitor-overall").textContent = "Monitoring ma'lumoti olinmadi"; }
-    finally { setBusy(button, false); }
+    } catch (error) { if (!silent) showToast(error.message, true); document.getElementById("monitor-overall").textContent = "Monitoring ma'lumoti olinmadi"; }
+    finally { if (!silent) setBusy(button, false); }
   }
 
   async function loadTech() {
     if (role !== "techadmin") return;
-    try { const [price, users, tokens] = await Promise.all([api("/api/admin/settings/price"), api("/api/admin/users"), api("/api/admin/backup-tokens")]); document.getElementById("price-input").value = price.price; document.getElementById("current-price-value").textContent = fmt(price.price); renderUsers(users.users); renderTokens(tokens.tokens); }
+    try { const [price, tokens] = await Promise.all([api("/api/admin/settings/price"), api("/api/admin/backup-tokens")]); document.getElementById("price-input").value = price.price; document.getElementById("current-price-value").textContent = fmt(price.price); renderTokens(tokens.tokens); }
     catch (error) { showToast(error.message, true); }
   }
+  async function loadUsers() { if (role !== "techadmin") return; try { renderUsers((await api("/api/admin/users")).users); } catch (error) { showToast(error.message, true); } }
   function renderUsers(users) {
     const body = document.getElementById("users-body"); body.replaceChildren(); users.forEach(user => { const row = document.createElement("tr"); row.append(td(user.username), td(user.role)); const state = document.createElement("td"); const stateBadge = badge(user.is_active ? "paid" : "cancelled"); stateBadge.textContent = user.is_active ? "Faol" : "Bloklangan"; state.append(stateBadge); row.append(state, td(user.last_login_at || "Hali kirmagan")); const actions = document.createElement("td"); actions.append(actionButton("Parol", () => openPasswordModal(user)), actionButton(user.is_active ? "Bloklash" : "Faollashtirish", event => toggleUser(user.id, event.currentTarget), "danger-soft")); row.append(actions); body.append(row); });
   }
@@ -194,27 +208,46 @@
   async function createToken() { const button = document.getElementById("btn-create-token"); setBusy(button, true); try { const data = await api("/api/admin/backup-tokens", { method: "POST", body: JSON.stringify({ name: document.getElementById("token-name").value.trim() }) }); document.getElementById("new-token-value").textContent = data.token; document.getElementById("new-token-box").classList.remove("hidden"); document.getElementById("token-name").value = ""; renderTokens((await api("/api/admin/backup-tokens")).tokens); showToast("Backup token yaratildi"); } catch (error) { showToast(error.message, true); } finally { setBusy(button, false); } }
   async function revokeToken(id, button) { if (!window.confirm("Bu tokenni bekor qilasizmi?")) return; setBusy(button, true); try { await api(`/api/admin/backup-tokens/${id}/revoke`, { method: "POST" }); renderTokens((await api("/api/admin/backup-tokens")).tokens); showToast("Token bekor qilindi"); } catch (error) { showToast(error.message, true); } finally { setBusy(button, false); } }
 
-  const loaders = { dashboard: loadDashboard, reports: runReport, search: doSearch, history: loadHistory, monitor: loadMonitor, tech: loadTech };
+  const loaders = { dashboard: loadDashboard, reports: runReport, search: doSearch, history: loadHistory, monitor: loadMonitor, users: loadUsers, tech: loadTech };
   function activateTab(name) {
     const target = document.getElementById(`tab-${name}`); if (!target) return;
+    activeTab = name;
     document.querySelectorAll(".nav-link").forEach(link => link.classList.toggle("active", link.dataset.tab === name)); document.querySelectorAll(".admin-tab").forEach(tab => tab.classList.toggle("hidden", tab !== target));
     clearInterval(monitorTimer); monitorTimer = null; if (loaders[name]) loaders[name](); if (name === "monitor") monitorTimer = setInterval(loadMonitor, 30000); window.scrollTo(0, 0);
+  }
+
+  async function pollSync() {
+    if (syncBusy || document.hidden) return; syncBusy = true;
+    const indicator = document.getElementById("sync-status");
+    try {
+      const data = await api("/api/sync/state");
+      if (lastSyncVersion && data.version !== lastSyncVersion) {
+        if (activeTab === "dashboard") await loadDashboard();
+        else if (activeTab === "history") await loadHistory(true);
+        else if (activeTab === "search") await doSearch(true);
+        else if (activeTab === "reports") await runReport(true);
+        else if (activeTab === "monitor") await loadMonitor(true);
+        else if (activeTab === "users") await loadUsers();
+      }
+      lastSyncVersion = data.version; if (indicator) { indicator.classList.remove("offline"); indicator.lastChild.textContent = " Qurilmalar sinxron"; }
+    } catch (_error) { if (indicator) { indicator.classList.add("offline"); indicator.lastChild.textContent = " Sinxronlash kutilmoqda"; } }
+    finally { syncBusy = false; }
   }
 
   document.querySelectorAll(".nav-link").forEach(link => link.addEventListener("click", () => activateTab(link.dataset.tab)));
   document.querySelectorAll("[data-go]").forEach(button => { if (!document.getElementById(`tab-${button.dataset.go}`)) button.classList.add("hidden"); else button.addEventListener("click", () => activateTab(button.dataset.go)); });
   document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => document.getElementById(button.dataset.close).classList.add("hidden")));
-  document.getElementById("btn-refresh-dashboard").addEventListener("click", loadDashboard);
-  document.getElementById("btn-report").addEventListener("click", runReport); document.querySelectorAll("[data-range]").forEach(button => button.addEventListener("click", () => { setReportRange(button.dataset.range); runReport(); }));
+  document.getElementById("btn-refresh-dashboard")?.addEventListener("click", loadDashboard);
+  document.getElementById("btn-report").addEventListener("click", () => runReport()); document.querySelectorAll("[data-range]").forEach(button => button.addEventListener("click", () => { setReportRange(button.dataset.range); runReport(); }));
   document.getElementById("btn-export-report").addEventListener("click", () => exportCsv("report")); document.getElementById("btn-print-report").addEventListener("click", () => window.print());
-  document.getElementById("btn-search").addEventListener("click", () => { searchPage = 1; doSearch(); }); document.getElementById("btn-refresh-search").addEventListener("click", doSearch); document.getElementById("btn-export-search").addEventListener("click", () => exportCsv("search")); document.getElementById("btn-print-table").addEventListener("click", () => window.print());
+  document.getElementById("btn-search").addEventListener("click", () => { searchPage = 1; doSearch(); }); document.getElementById("btn-refresh-search").addEventListener("click", () => doSearch()); document.getElementById("btn-export-search").addEventListener("click", () => exportCsv("search")); document.getElementById("btn-print-table").addEventListener("click", () => window.print());
   document.getElementById("search-plate").addEventListener("keydown", event => { if (event.key === "Enter") { searchPage = 1; doSearch(); } }); document.querySelectorAll("[data-search-sample]").forEach(button => button.addEventListener("click", () => { document.getElementById("search-plate").value = button.dataset.searchSample; searchPage = 1; doSearch(); }));
   document.getElementById("btn-reset-search").addEventListener("click", () => { ["search-plate", "search-start", "search-end"].forEach(id => { document.getElementById(id).value = ""; }); document.getElementById("search-status").value = ""; searchPage = 1; doSearch(); });
   document.getElementById("search-prev").addEventListener("click", () => { if (searchPage > 1) { searchPage -= 1; doSearch(); } }); document.getElementById("search-next").addEventListener("click", () => { if (searchPage < searchPages) { searchPage += 1; doSearch(); } });
-  document.getElementById("history-prev").addEventListener("click", () => { if (historyPage > 1) { historyPage -= 1; loadHistory(); } }); document.getElementById("history-next").addEventListener("click", () => { if (historyPage < historyPages) { historyPage += 1; loadHistory(); } }); document.getElementById("btn-refresh-history").addEventListener("click", loadHistory);
+  document.getElementById("history-prev").addEventListener("click", () => { if (historyPage > 1) { historyPage -= 1; loadHistory(); } }); document.getElementById("history-next").addEventListener("click", () => { if (historyPage < historyPages) { historyPage += 1; loadHistory(); } }); document.getElementById("btn-refresh-history").addEventListener("click", () => loadHistory());
   document.getElementById("detail-print").addEventListener("click", event => { if (selectedDetail) reprint(selectedDetail.id, event.currentTarget); });
   document.getElementById("import-file").addEventListener("change", event => { const file = event.target.files[0]; document.getElementById("import-file-name").textContent = file ? `${file.name} (${bytes(file.size)})` : ".db faylni tanlash"; document.getElementById("btn-import").disabled = !file; }); document.getElementById("btn-import").addEventListener("click", importDatabase);
-  if (role === "techadmin") { document.getElementById("btn-refresh-monitor").addEventListener("click", loadMonitor); document.getElementById("btn-save-price").addEventListener("click", savePrice); document.getElementById("btn-create-user").addEventListener("click", createUser); document.getElementById("btn-reset-password").addEventListener("click", resetPassword); document.getElementById("btn-create-token").addEventListener("click", createToken); document.getElementById("manual-backup-name").textContent = `${new Date().toLocaleDateString("uz-UZ")} 00-00 holatiga backup.db`; }
+  if (role === "techadmin") { document.getElementById("btn-refresh-monitor").addEventListener("click", () => loadMonitor()); document.getElementById("btn-save-price").addEventListener("click", savePrice); document.getElementById("btn-create-user").addEventListener("click", createUser); document.getElementById("btn-reset-password").addEventListener("click", resetPassword); document.getElementById("btn-create-token").addEventListener("click", createToken); document.getElementById("manual-backup-name").textContent = `${new Date().toLocaleDateString("uz-UZ")} 00-00 holatiga backup.db`; }
   window.addEventListener("resize", () => { if (weeklyData.length) drawBarChart("weekly-chart", weeklyData, { highlightLast: true }); if (reportData.length) drawBarChart("report-chart", reportData); if (systemData.length) drawBarChart("system-chart", systemData, { highlightLast: true }); });
-  setClock(); setInterval(setClock, 1000); checkAgent(); setInterval(checkAgent, 30000); setReportRange("week"); loadDashboard();
+  setClock(); setInterval(setClock, 1000); checkAgent(); setInterval(checkAgent, 30000); setReportRange("week"); activateTab(activeTab); pollSync(); setInterval(pollSync, 12000); document.addEventListener("visibilitychange", () => { if (!document.hidden) pollSync(); });
 })();

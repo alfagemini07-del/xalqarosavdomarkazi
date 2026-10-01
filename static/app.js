@@ -11,6 +11,8 @@
   let current = null;
   let paymentMethod = "cash";
   let statsLoading = false;
+  let lastSyncVersion = null;
+  let syncLoading = false;
 
   async function api(url, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -60,6 +62,20 @@
       console.warn(error);
     } finally {
       statsLoading = false;
+    }
+  }
+
+  async function pollSync() {
+    if (syncLoading || document.hidden) return;
+    syncLoading = true;
+    try {
+      const data = await api("/api/sync/state");
+      if (lastSyncVersion && data.version !== lastSyncVersion) await loadStats();
+      lastSyncVersion = data.version;
+    } catch (error) {
+      console.warn("Sinxronlash vaqtincha mavjud emas", error);
+    } finally {
+      syncLoading = false;
     }
   }
 
@@ -247,6 +263,7 @@
   document.addEventListener("keydown", event => { if (event.key === "Escape" && !plateModal.classList.contains("hidden")) closePlateModal(); });
 
   setClock(); setInterval(setClock, 1000);
-  loadStats(); setInterval(loadStats, 30000);
+  loadStats(); pollSync(); setInterval(pollSync, 12000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { pollSync(); loadStats(); } });
   checkLocalAgent(); setInterval(checkLocalAgent, 30000);
 })();
