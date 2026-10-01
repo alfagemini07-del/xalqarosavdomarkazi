@@ -1,4 +1,4 @@
-"""Windows local companion for direct ESC/POS printing and daily SQLite backup.
+"""Windows local companion for driver/ESC-POS printing and daily SQLite backup.
 
 Commands:
     python local_agent.py configure
@@ -40,11 +40,14 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         raise RuntimeError("local_agent_config.json topilmadi. Avval 'python local_agent.py configure' ni bajaring.")
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    required = ("site_url", "allowed_origin", "backup_folder", "backup_token")
+    required = ("site_url", "allowed_origin")
     missing = [key for key in required if not str(config.get(key, "")).strip()]
     if missing:
         raise RuntimeError("Konfiguratsiyada yetishmaydi: " + ", ".join(missing))
     config.setdefault("printer_name", "")
+    config.setdefault("print_mode", "windows")
+    config.setdefault("backup_folder", str(Path.home() / "Tarozi Backups"))
+    config.setdefault("backup_token", "")
     config.setdefault("agent_port", 17832)
     return config
 
@@ -70,8 +73,11 @@ def configure() -> None:
     default_origin = f"{parsed.scheme}://{parsed.netloc}"
     allowed_origin = ask("Brauzer origin", "allowed_origin", default_origin).rstrip("/")
     backup_folder = ask("Backup papka to'liq yo'li", "backup_folder", str(Path.home() / "Tarozi Backups"))
-    backup_token = ask("Techadmin yaratgan backup token", "backup_token")
+    backup_token = ask("Avtomatik backup tokeni (ixtiyoriy, bo'sh qoldirish mumkin)", "backup_token")
     printer_name = ask("Printer nomi (bo'sh bo'lsa Windows default printer)", "printer_name")
+    print_mode = ask("Chop etish rejimi: windows yoki escpos", "print_mode", "windows").lower()
+    if print_mode not in {"windows", "escpos"}:
+        raise RuntimeError("Chop etish rejimi faqat windows yoki escpos bo'lishi mumkin")
     port_text = ask("Lokal agent porti", "agent_port", "17832")
     port = int(port_text)
     if port < 1024 or port > 65535:
@@ -83,6 +89,7 @@ def configure() -> None:
         "backup_folder": str(Path(backup_folder).expanduser().resolve()),
         "backup_token": backup_token,
         "printer_name": printer_name,
+        "print_mode": print_mode,
         "agent_port": port,
     }
     Path(config["backup_folder"]).mkdir(parents=True, exist_ok=True)
@@ -223,6 +230,135 @@ def print_raw(receipt: dict, config: dict) -> str:
                 logging.exception("Could not close printer")
 
 
+def build_receipt_image(receipt: dict):
+    """Render a complete 80 mm receipt as a monochrome bitmap for Windows drivers."""
+    required = ("receipt_no", "plate_number", "price_fmt", "created_at")
+    missing = [key for key in required if not str(receipt.get(key, "")).strip()]
+    if missing:
+        raise ValueError("Chek ma'lumoti yetarli emas: " + ", ".join(missing))
+    from PIL import Image, ImageDraw, ImageFont
+    import qrcode
+
+    width, margin = 576, 28
+    canvas = Image.new("L", (width, 1500), 255)
+    draw = ImageDraw.Draw(canvas)
+
+    def font(size: int, bold: bool = False):
+        candidates = [
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("arialbd.ttf" if bold else "arial.ttf"),
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("segoeuib.ttf" if bold else "segoeui.ttf"),
+        ]
+        for candidate in candidates:
+            try:
+                return ImageFont.truetype(str(candidate), size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    normal, small, bold, title, large = font(25), font(21), font(27, True), font(34, True), font(39, True)
+    y = 24
+
+    def text_width(text: object, selected_font) -> int:
+        box = draw.textbbox((0, 0), str(text), font=selected_font)
+        return box[2] - box[0]
+
+    def centered(text: object, selected_font, gap: int = 8) -> None:
+        nonlocal y
+        value = str(text)
+        draw.text(((width - text_width(value, selected_font)) // 2, y), value, fill=0, font=selected_font)
+        y += (draw.textbbox((0, 0), value, font=selected_font)[3] + gap)
+
+    def pair(left: object, right: object, selected_font=normal, gap: int = 11) -> None:
+        nonlocal y
+        left_value, right_value = str(left), str(right)
+        draw.text((margin, y), left_value, fill=0, font=selected_font)
+        draw.text((width - margin - text_width(right_value, selected_font), y), right_value, fill=0, font=selected_font)
+        y += draw.textbbox((0, 0), "Ag", font=selected_font)[3] + gap
+
+    def divider() -> None:
+        nonlocal y
+        draw.line((margin, y, width - margin, y), fill=0, width=2)
+        y += 14
+
+    centered("TAROZI NAZORAT", title)
+    centered("AIRITOM LOGISTICS CENTER MCHJ", small)
+    centered("Avtomobil vazn o'lchash cheki", small, 14)
+    divider()
+    pair("Chek:", receipt["receipt_no"], small)
+    pair("Sana:", receipt["created_at"], small)
+    divider()
+    pair("Mashina:", receipt["plate_number"], large, 15)
+    pair("Tarozidagi vazni:", f"{receipt.get('weight_fmt', '0')} kg", bold)
+    divider()
+    pair("Vazn o'lchash:", f"{receipt.get('weighing_fee_fmt', receipt['price_fmt'])} so'm", small)
+    if receipt.get("entry_service"):
+        pair("Hududga kirish:", f"{receipt.get('entry_fee_fmt', '0')} so'm", small)
+    if receipt.get("reload_service"):
+        pair("Qayta yuklash:", f"{receipt.get('reload_fee_fmt', '0')} so'm", small)
+    divider()
+    pair("JAMI:", f"{receipt.get('total_fmt', receipt['price_fmt'])} so'm", bold, 15)
+    method = {"cash": "Naqd pul", "card": "Uzcard / Humo", "bank": "Hisob raqam"}.get(receipt.get("payment_method"), "Naqd pul")
+    pair("To'lov turi:", method, small)
+    pair("Holat:", "To'landi", small)
+    divider()
+    qr_text = receipt.get("qr_text") or f"Chek: {receipt['receipt_no']}\nMashina: {receipt['plate_number']}\nJami: {receipt['price_fmt']} so'm"
+    qr_builder = qrcode.QRCode(
+        version=None,
+        box_size=4,
+        border=2,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+    )
+    qr_builder.add_data(qr_text)
+    qr_builder.make(fit=True)
+    qr = qr_builder.make_image(fill_color="black", back_color="white").convert("L")
+    canvas.paste(qr, ((width - qr.width) // 2, y))
+    y += qr.height + 12
+    centered("QR ichida chek ma'lumotlari", small)
+    centered("Xizmatdan foydalanganingiz uchun rahmat!", small, 20)
+    return canvas.crop((0, 0, width, min(canvas.height, y + 24)))
+
+
+def print_windows_driver(receipt: dict, config: dict) -> str:
+    """Print through the installed Windows driver; works without ESC/POS support."""
+    try:
+        import win32print
+        import win32ui
+        from PIL import ImageWin
+    except ImportError as exc:
+        raise RuntimeError("pywin32 va Pillow o'rnatilmagan") from exc
+    printer_name = config.get("printer_name") or win32print.GetDefaultPrinter()
+    if not printer_name:
+        raise RuntimeError("Windows default printer topilmadi")
+    image = build_receipt_image(receipt).convert("RGB")
+    dc = win32ui.CreateDC()
+    try:
+        dc.CreatePrinterDC(printer_name)
+        printable_width = max(1, dc.GetDeviceCaps(8))
+        printable_height = max(1, dc.GetDeviceCaps(10))
+        scale = min(printable_width / image.width, printable_height / image.height)
+        target_width = max(1, int(image.width * scale))
+        target_height = max(1, int(image.height * scale))
+        left = max(0, (printable_width - target_width) // 2)
+        dc.StartDoc("Tarozi Chek")
+        dc.StartPage()
+        ImageWin.Dib(image).draw(dc.GetHandleOutput(), (left, 0, left + target_width, target_height))
+        dc.EndPage()
+        dc.EndDoc()
+        logging.info("Driver receipt %s sent to %s", receipt.get("receipt_no"), printer_name)
+        return printer_name
+    finally:
+        try:
+            dc.DeleteDC()
+        except Exception:
+            pass
+
+
+def print_receipt(receipt: dict, config: dict) -> str:
+    if str(config.get("print_mode", "windows")).lower() == "escpos":
+        return print_raw(receipt, config)
+    return print_windows_driver(receipt, config)
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     server_version = "TaroziLocalAgent/2"
     config: dict = {}
@@ -272,7 +408,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             win32print.ClosePrinter(handle)
             self.send_json(
                 200,
-                {"success": True, "service": "Tarozi Local Agent", "printer": printer_name, "printer_ready": True},
+                {"success": True, "service": "Tarozi Local Agent", "printer": printer_name, "printer_ready": True, "print_mode": self.config.get("print_mode", "windows")},
                 origin,
             )
         except Exception as exc:
@@ -309,7 +445,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             if length < 2 or length > 65536:
                 raise ValueError("So'rov hajmi noto'g'ri")
             receipt = json.loads(self.rfile.read(length).decode("utf-8"))
-            printer = print_raw(receipt, self.config)
+            printer = print_receipt(receipt, self.config)
             self.send_json(200, {"success": True, "printer": printer}, origin)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"success": False, "message": str(exc)}, origin)
@@ -351,6 +487,8 @@ def quick_check_sqlite(path: Path) -> None:
 
 
 def download_backup(config: dict) -> Path:
+    if not str(config.get("backup_token", "")).strip():
+        raise RuntimeError("Avtomatik backup tokeni sozlanmagan; saytdagi qo'lda backup tokensiz ishlaydi")
     folder = Path(config["backup_folder"]).expanduser().resolve()
     folder.mkdir(parents=True, exist_ok=True)
     url = config["site_url"].rstrip("/") + "/api/backups/sqlite"
@@ -421,7 +559,7 @@ def main() -> int:
                 "price_fmt": "60 000",
                 "created_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             }
-            printer = print_raw(sample, config)
+            printer = print_receipt(sample, config)
             print(f"Test chek yuborildi: {printer}")
         return 0
     except Exception as exc:

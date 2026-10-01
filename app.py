@@ -361,7 +361,8 @@ def serialize_weighing(row: dict) -> dict:
     created = localize(row["created_at"])
     paid_at = localize(row.get("paid_at"))
     total = int(row.get("price") or 0)
-    weighing_fee = int(row.get("weighing_fee") or total)
+    weighing_fee_value = row.get("weighing_fee")
+    weighing_fee = total if weighing_fee_value is None else int(weighing_fee_value)
     entry_fee = int(row.get("entry_fee") or 0)
     reload_fee = int(row.get("reload_fee") or 0)
     public_token = row.get("public_token")
@@ -623,6 +624,7 @@ def receipt_page(weighing_id: int):
         "receipt.html",
         receipt=payload,
         auto_print=request.args.get("autoprint") == "1",
+        embedded=request.args.get("embedded") == "1",
         public_view=False,
     )
 
@@ -646,7 +648,7 @@ def public_receipt(token: str):
     payload = receipt_payload(row)
     payload["qr_b64"] = make_qr_base64(payload["qr_text"])
     return render_template(
-        "receipt.html", receipt=payload, auto_print=False, public_view=True
+        "receipt.html", receipt=payload, auto_print=False, embedded=False, public_view=True
     )
 
 
@@ -826,6 +828,15 @@ def pay_weighing(weighing_id: int):
         return jsonify(success=False, message="Vazn 1–1 000 000 kg oralig'ida bo'lishi kerak"), 400
     entry_service = data.get("entry_service") is True
     reload_service = data.get("reload_service") is True
+    try:
+        entry_fee_requested = int(data.get("entry_fee")) if entry_service else 0
+        reload_fee_requested = int(data.get("reload_fee")) if reload_service else 0
+    except (TypeError, ValueError):
+        return jsonify(success=False, message="Qo'shimcha xizmat summasini to'g'ri kiriting"), 400
+    if entry_service and not 1 <= entry_fee_requested <= 1_000_000_000:
+        return jsonify(success=False, message="Hududga kirish to'lovi 1–1 000 000 000 so'm bo'lishi kerak"), 400
+    if reload_service and not 1 <= reload_fee_requested <= 1_000_000_000:
+        return jsonify(success=False, message="Qayta yuklash to'lovi 1–1 000 000 000 so'm bo'lishi kerak"), 400
     with get_pool().connection() as conn:
         row = conn.execute(
             """
@@ -843,9 +854,14 @@ def pay_weighing(weighing_id: int):
             return jsonify(success=False, message="Bekor qilingan yozuvni to'lab bo'lmaydi"), 409
         if row["status"] == "pending":
             service_prices = get_service_prices(conn)
-            weighing_fee = int(row.get("weighing_fee") or row.get("price") or service_prices["weighing"])
-            entry_fee = service_prices["entry"] if entry_service else 0
-            reload_fee = service_prices["reload"] if reload_service else 0
+            weighing_fee_value = row.get("weighing_fee")
+            weighing_fee = int(
+                weighing_fee_value
+                if weighing_fee_value is not None
+                else (row.get("price") or service_prices["weighing"])
+            )
+            entry_fee = entry_fee_requested
+            reload_fee = reload_fee_requested
             total = weighing_fee + entry_fee + reload_fee
             row = conn.execute(
                 """
@@ -1232,6 +1248,36 @@ def parse_legacy_datetime(value, fallback_date: date) -> datetime:
     return parsed
 
 
+def legacy_number(value, default: int = 0) -> int:
+    """Read SQLite INTEGER/REAL/TEXT money fields without rejecting old rows."""
+    try:
+        return max(0, int(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return max(0, default)
+
+
+def legacy_flag(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "ha", "paid", "completed"}
+    return bool(value)
+
+
+def legacy_date(value, fallback: date | None = None) -> date:
+    text = str(value or "").strip()
+    for parser in (
+        date.fromisoformat,
+        lambda item: datetime.strptime(item, "%d.%m.%Y").date(),
+        lambda item: datetime.fromisoformat(item).date(),
+    ):
+        try:
+            return parser(text)
+        except (TypeError, ValueError):
+            continue
+    return fallback or now_local().date()
+
+
 @app.post("/api/admin/import-sqlite")
 @roles_required("admin", "techadmin")
 def import_sqlite():
@@ -1262,44 +1308,29 @@ def import_sqlite():
         uri = f"file:{Path(temp_path).as_posix()}?mode=ro&immutable=1"
         legacy = sqlite3.connect(uri, uri=True)
         legacy.row_factory = sqlite3.Row
-        table = legacy.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='weighings'"
-        ).fetchone()
-        if not table:
-            legacy.close()
-            return jsonify(success=False, message="weighings jadvali topilmadi"), 400
-        columns = {row[1] for row in legacy.execute("PRAGMA table_info(weighings)")}
-        required = {"id", "plate_number", "price", "created_at", "date"}
-        if not required.issubset(columns):
-            legacy.close()
-            return jsonify(success=False, message="weighings jadvali formati mos emas"), 400
-
-        optional = [
-            name
-            for name in (
-                "paid",
-                "status",
-                "receipt_no",
-                "paid_at",
-                "cancelled_at",
-                "source",
-                "legacy_id",
-                "legacy_receipt_no",
-                "legacy_fingerprint",
-                "payment_method",
-                "weight_kg",
-                "weighing_fee",
-                "entry_fee",
-                "reload_fee",
-                "entry_service",
-                "reload_service",
-                "public_token",
+        table_names = {
+            row[0]
+            for row in legacy.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
-            if name in columns
-        ]
-        select_columns = ["id", "plate_number", "price", "created_at", "date", *optional]
-        quoted = ", ".join(f'"{name}"' for name in select_columns)
-        cursor = legacy.execute(f"SELECT {quoted} FROM weighings ORDER BY date, id")
+        }
+        if "weighings" in table_names:
+            source_kind = "weighings"
+            columns = {row[1] for row in legacy.execute("PRAGMA table_info(weighings)")}
+            if "plate_number" not in columns:
+                return jsonify(success=False, message="weighings jadvalida plate_number ustuni yo'q"), 400
+            cursor = legacy.execute('SELECT rowid AS "__rowid__", * FROM "weighings" ORDER BY rowid')
+        elif "vehicles" in table_names:
+            source_kind = "vehicles"
+            columns = {row[1] for row in legacy.execute("PRAGMA table_info(vehicles)")}
+            if "plate" not in columns:
+                return jsonify(success=False, message="vehicles jadvalida plate ustuni yo'q"), 400
+            cursor = legacy.execute('SELECT rowid AS "__rowid__", * FROM "vehicles" ORDER BY rowid')
+        else:
+            return jsonify(
+                success=False,
+                message="Mos jadval topilmadi: weighings yoki vehicles jadvali kerak",
+            ), 400
         batch_id = uuid.uuid4()
         total = inserted = 0
         daily_counter: dict[str, int] = {}
@@ -1320,34 +1351,68 @@ def import_sqlite():
                 for legacy_row in source_rows:
                     total += 1
                     row = dict(legacy_row)
+                    source_id = row.get("id") or row.get("__rowid__") or total
+                    if source_kind == "vehicles":
+                        business_date = legacy_date(row.get("entry_date"), legacy_date(row.get("created_at")))
+                        created_value = row.get("created_at") or " ".join(
+                            part for part in (str(row.get("entry_date") or "").strip(), str(row.get("entry_time") or "").strip()) if part
+                        )
+                        plate_value = row.get("plate")
+                        parking_fee = legacy_number(row.get("fee")) + legacy_number(row.get("queue_fee"))
+                        imported_reload_fee = legacy_number(row.get("reload_fee"))
+                        imported_weighing_fee = 0
+                        imported_entry_fee = parking_fee
+                        imported_entry_service = parking_fee > 0
+                        imported_reload_service = imported_reload_fee > 0
+                        imported_price = parking_fee + imported_reload_fee
+                        vehicle_status = str(row.get("status") or "").strip().lower()
+                        imported_status = "paid" if vehicle_status in {"completed", "paid", "done", "closed"} else (
+                            "cancelled" if vehicle_status in {"cancelled", "canceled", "deleted"} else "pending"
+                        )
+                        imported_receipt = row.get("queue_number")
+                        imported_source = "sqlite_import:vehicles"
+                    else:
+                        created_fallback = legacy_date(row.get("created_at"))
+                        business_date = legacy_date(row.get("date"), created_fallback)
+                        created_value = row.get("created_at")
+                        plate_value = row.get("plate_number")
+                        imported_price = legacy_number(row.get("price"))
+                        imported_status = row.get("status")
+                        if imported_status not in {"pending", "paid", "cancelled"}:
+                            imported_status = "paid" if legacy_flag(row.get("paid"), True) else "pending"
+                        imported_weighing_fee = legacy_number(row.get("weighing_fee")) if "weighing_fee" in row else imported_price
+                        imported_entry_fee = legacy_number(row.get("entry_fee"))
+                        imported_reload_fee = legacy_number(row.get("reload_fee"))
+                        imported_entry_service = legacy_flag(row.get("entry_service"), imported_entry_fee > 0)
+                        imported_reload_service = legacy_flag(row.get("reload_service"), imported_reload_fee > 0)
+                        imported_receipt = row.get("legacy_receipt_no") or row.get("receipt_no")
+                        imported_source = str(row.get("source") or "sqlite_import")[:80]
+                    created_at = parse_legacy_datetime(created_value, business_date)
                     try:
-                        business_date = date.fromisoformat(str(row.get("date") or ""))
+                        plate, plate_search = clean_plate(str(plate_value or ""), strict=False)
                     except ValueError:
-                        business_date = now_local().date()
-                    created_at = parse_legacy_datetime(row.get("created_at"), business_date)
-                    try:
-                        plate, plate_search = clean_plate(str(row.get("plate_number") or ""), strict=False)
-                    except ValueError:
-                        plate = f"NOMA'LUM-{row.get('id', total)}"
+                        plate = f"NOMA'LUM-{source_id}"
                         plate_search = re.sub(r"\W", "", plate)
-                    price = max(0, int(row.get("price") or 0))
-                    status = row.get("status")
-                    if status not in {"pending", "paid", "cancelled"}:
-                        status = "paid" if int(row.get("paid", 1) or 0) else "pending"
+                    weight_kg = legacy_number(row.get("weight_kg"))
+                    weighing_fee = imported_weighing_fee
+                    entry_fee = imported_entry_fee if imported_entry_service else 0
+                    reload_fee = imported_reload_fee if imported_reload_service else 0
+                    price = imported_price or (weighing_fee + entry_fee + reload_fee)
+                    status = imported_status
                     daily_key = business_date.isoformat()
                     daily_counter[daily_key] = daily_counter.get(daily_key, 0) + 1
-                    legacy_receipt = row.get("legacy_receipt_no") or row.get("receipt_no")
+                    legacy_receipt = imported_receipt
                     if not legacy_receipt:
                         legacy_receipt = f"{business_date.strftime('%d.%m.%Y')}/{daily_counter[daily_key]:05d}"
                     fingerprint = row.get("legacy_fingerprint") or hashlib.sha256(
                         (
-                            f"{row.get('id')}|{plate}|{price}|{status}|"
+                            f"{source_kind}|{source_id}|{plate}|{price}|{status}|"
                             f"{created_at.isoformat()}|{business_date.isoformat()}"
                         ).encode("utf-8")
                     ).hexdigest()
                     receipt_no = row.get("receipt_no")
                     if not receipt_no or not str(receipt_no).strip():
-                        receipt_no = f"IMP-{business_date.strftime('%Y%m%d')}-{row.get('id')}-{fingerprint[:8]}"
+                        receipt_no = f"IMP-{business_date.strftime('%Y%m%d')}-{source_id}-{fingerprint[:8]}"
                     paid_at = parse_legacy_datetime(row.get("paid_at"), business_date) if row.get("paid_at") else (
                         created_at if status == "paid" else None
                     )
@@ -1359,12 +1424,8 @@ def import_sqlite():
                     payment_method = row.get("payment_method") or "cash"
                     if payment_method not in {"cash", "card", "bank"}:
                         payment_method = "cash"
-                    weight_kg = max(0, int(row.get("weight_kg") or 0))
-                    weighing_fee = max(0, int(row.get("weighing_fee") or price))
-                    entry_service = bool(int(row.get("entry_service") or 0))
-                    reload_service = bool(int(row.get("reload_service") or 0))
-                    entry_fee = max(0, int(row.get("entry_fee") or 0)) if entry_service else 0
-                    reload_fee = max(0, int(row.get("reload_fee") or 0)) if reload_service else 0
+                    entry_service = imported_entry_service
+                    reload_service = imported_reload_service
                     public_token = str(row.get("public_token") or secrets.token_urlsafe(24))[:100]
                     values.append(
                         (
@@ -1385,8 +1446,8 @@ def import_sqlite():
                             paid_at,
                             cancelled_at,
                             g.user["id"],
-                            "sqlite_import",
-                            int(row.get("legacy_id") or row.get("id") or 0),
+                            imported_source,
+                            legacy_number(row.get("legacy_id") or source_id),
                             str(legacy_receipt)[:80],
                             fingerprint,
                             batch_id,
@@ -1426,6 +1487,7 @@ def import_sqlite():
         return jsonify(
             success=True,
             message="Import yakunlandi",
+            source_table=source_kind,
             total=total,
             inserted=inserted,
             skipped=total - inserted,
@@ -1466,39 +1528,24 @@ def get_price_setting():
 def update_price_setting():
     data = request.get_json(silent=True) or {}
     with get_pool().connection() as conn:
-        current = get_service_prices(conn)
         try:
-            prices = {
-                "weighing": int(data.get("price", current["weighing"])),
-                "entry": int(data.get("entry_price", current["entry"])),
-                "reload": int(data.get("reload_price", current["reload"])),
-            }
+            price = int(data.get("price"))
         except (TypeError, ValueError):
-            return jsonify(success=False, message="Narxlardan biri noto'g'ri"), 400
-        if any(value < 0 or value > 1_000_000_000 for value in prices.values()):
+            return jsonify(success=False, message="Tarozi narxi noto'g'ri"), 400
+        if price < 0 or price > 1_000_000_000:
             return jsonify(success=False, message="Narx ruxsat etilgan oraliqda emas"), 400
-        for key, value in (
-            ("weighing_price", prices["weighing"]),
-            ("entry_service_price", prices["entry"]),
-            ("reload_service_price", prices["reload"]),
-        ):
-            conn.execute(
-                """
-                INSERT INTO settings (key, value, updated_at, updated_by)
-                VALUES (%s, %s, NOW(), %s)
-                ON CONFLICT (key) DO UPDATE SET
-                    value = EXCLUDED.value,
-                    updated_at = NOW(),
-                    updated_by = EXCLUDED.updated_by
-                """,
-                (key, str(value), g.user["id"]),
-            )
-    return jsonify(
-        success=True,
-        price=prices["weighing"],
-        entry_price=prices["entry"],
-        reload_price=prices["reload"],
-    )
+        conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at, updated_by)
+            VALUES ('weighing_price', %s, NOW(), %s)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = NOW(),
+                updated_by = EXCLUDED.updated_by
+            """,
+            (str(price), g.user["id"]),
+        )
+    return jsonify(success=True, price=price)
 
 
 @app.get("/api/admin/users")

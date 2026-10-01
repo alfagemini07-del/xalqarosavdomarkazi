@@ -11,7 +11,7 @@ AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi G
 - Techadmin loginidan keyin alohida texnik monitoring dashboardi: narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, operatsion bazani himoyalangan tarzda tozalash va tizim monitoringi.
 - Operator, admin va techadmin jadvallarida server tomondagi qidiruv hamda 10/15/20/50/100 talik sahifalash mavjud.
 - Ochiq qurilmalar Supabase'dagi o'zgarish versiyasini yengil so'rov bilan kuzatadi; faqat o'zgarish bo'lganda ko'rinayotgan ma'lumot yangilanadi va kiritilayotgan matn saqlanadi.
-- Vazn o'lchash, hududga kirganlik va qayta yuklash narxlari alohida saqlanadi; techadmin uchalasini ham o'zgartiradi.
+- Vazn o'lchash narxi avtomatik qo'llanadi va uni faqat techadmin o'zgartiradi. Hududga kirish hamda qayta yuklash tanlanganda operator summani har bir chek uchun qo'lda kiritadi.
 - Chekda avtomobil vazni, har bir tanlangan xizmat va yakuniy summa alohida ko'rsatiladi. QR kod saytga yo'naltirmaydi: skaner qilinganda mashina, vazn, vaqt va barcha to'lovlar telefonning o'zida oddiy matn sifatida ko'rinadi.
 - Sessiya bir qurilmada yangilanib turadi va faqat foydalanuvchi chiqish tugmasini bosganda yopiladi.
 - Parollar `scrypt` bilan xeshlanadi. Amaldagi parolni ko'rib bo'lmaydi; techadmin faqat yangi parol o'rnatadi.
@@ -84,8 +84,6 @@ Qolgan muhim qiymatlar `render.yaml`da tayyor:
 
 - `INITIAL_TECHADMIN_USERNAME=techadmin`
 - `INITIAL_PRICE=30000`
-- `INITIAL_ENTRY_PRICE=30000`
-- `INITIAL_RELOAD_PRICE=30000`
 - `APP_TIMEZONE=Asia/Tashkent`
 - `COOKIE_SECURE=true`
 - `SUPABASE_DB_LIMIT_BYTES=524288000`
@@ -116,9 +114,10 @@ Parol: Render'da INITIAL_TECHADMIN_PASSWORD uchun bergan qiymat
 
 Import quyidagilarni qiladi:
 
-- `weighings` jadvalini tekshiradi;
+- eski `weighings`, yangi backup `weighings` yoki parkovka dasturining `vehicles` jadvalini avtomatik taniydi;
 - faylni faqat o'qish rejimida ochadi;
 - sanalar, avtomobil raqami, tarif va holatni ko'chiradi;
+- `vehicles` formatida parking/navbat puli “hududga kirish”, `reload_fee` esa “qayta yuklash” sifatida saqlanadi; mavjud bo'lmagan vazn `0 kg` bo'ladi;
 - eski admin/login parollarini ko'chirmaydi;
 - katta faylni 1000 qatorli bo'laklarda yozadi;
 - qayta import qilinganda takroriy yozuvlarni tashlab ketadi.
@@ -154,10 +153,9 @@ Talablar:
 
 Techadmin → **Sozlamalar** → **Avtomatik tungi backup agenti (ixtiyoriy)** bo'limini ochib token yarating va darhol nusxalang. Token keyin qayta ko'rsatilmaydi. Bu token faqat avtomatik agent uchun; saytdagi oddiy backup tugmasiga kerak emas.
 
-PowerShell'ni oching:
+PowerShell'ni oching. O'rnatuvchi `pywin32`, `Pillow` va `qrcode` printer kutubxonalarini o'zi o'rnatadi:
 
 ```powershell
-pip install "pywin32>=311"
 powershell -ExecutionPolicy Bypass -File .\install_local_agent.ps1
 ```
 
@@ -168,6 +166,7 @@ O'rnatuvchi quyidagilarni so'raydi:
 - techadmin yaratgan backup token;
 - backup saqlanadigan lokal papka;
 - printer nomi (bo'sh qoldirilsa Windows default printer).
+- chop etish rejimi: odatda `windows`; faqat haqiqiy ESC/POS printer uchun `escpos`.
 
 U ikki vazifa yaratadi:
 
@@ -192,9 +191,9 @@ Muvaffaqiyatli yangi backupdan so'ng shu papkadagi oldingi `* holatiga backup.db
 To'lov tasdiqlanganda:
 
 1. Frontend lokal agentni `127.0.0.1:17832`da tekshiradi.
-2. To'liq 80 mm chek ko'rinishi alohida oynada ochiladi.
-3. Agent bo'lsa chek RAW ESC/POS formatda dialogsiz yuboriladi va QR hamda kesish komandasi ishlatiladi.
-4. Agent yoki printer mavjud bo'lmasa shu oynada brauzer chop etish dialogi avtomatik ochiladi.
+2. To'liq 80 mm chek ko'rinishi sayt ichidagi bloklanmaydigan preview oynasida ochiladi.
+3. Agent bo'lsa standart `windows` rejimida chek QR bilan bitmapga aylantirilib Windows printer drayveri orqali dialogsız yuboriladi. `escpos` rejimi faqat ESC/POS tilini tushunadigan printerlar uchun.
+4. Agent yoki printer mavjud bo'lmasa preview ichidan brauzer chop etish dialogi avtomatik ochiladi. Preview'dagi **Chekni Chop Etish** tugmasi bilan qayta urinish mumkin.
 5. Admin qidiruv/tarix bo'limidan to'langan chekni istalgan vaqtda qayta chiqarishi mumkin.
 
 Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
