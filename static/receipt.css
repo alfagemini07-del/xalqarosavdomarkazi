@@ -1,0 +1,23 @@
+@page { size: 80mm auto; margin: 0; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; color: #111; background: #eef2f7; font-family: "Courier New", monospace; }
+.receipt { width: 80mm; max-width: 100%; margin: 0 auto; padding: 8mm 5mm; background: #fff; font-size: 13px; line-height: 1.45; }
+header, footer { text-align: center; }
+header h1 { margin: 0 0 4px; font-size: 19px; }
+header strong, header span { display: block; }
+header span { margin-top: 4px; font-size: 12px; }
+hr { margin: 11px 0; border: 0; border-top: 1px dashed #111; }
+dl { margin: 0; }
+dl div, .row, .major { display: flex; justify-content: space-between; gap: 12px; margin: 5px 0; }
+dt, dd { margin: 0; }
+.major { font-size: 16px; font-weight: bold; }
+.qr { width: 38mm; height: 38mm; margin: 10px auto; display: block; image-rendering: pixelated; }
+footer { font-size: 12px; }
+.print-actions { max-width: 80mm; margin: 14px auto; display: flex; gap: 10px; }
+.print-actions button { flex: 1; padding: 11px; border: 0; border-radius: 8px; color: white; background: #2563eb; cursor: pointer; font-weight: bold; }
+.print-actions button:last-child { background: #64748b; }
+@media print {
+  body { padding: 0; background: #fff; }
+  .receipt { width: 80mm; }
+  .print-actions { display: none; }
+}
