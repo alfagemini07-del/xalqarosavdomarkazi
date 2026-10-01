@@ -451,7 +451,10 @@ def login():
                 ).fetchone()
                 if user and user["is_active"] and check_password_hash(user["password_hash"], password):
                     conn.execute("DELETE FROM login_attempts WHERE identifier = %s", (identifier,))
-                    conn.execute("UPDATE users SET last_login_at = NOW() WHERE id = %s", (user["id"],))
+                    conn.execute(
+                        "UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = %s",
+                        (user["id"],),
+                    )
                     session.clear()
                     session.permanent = True
                     session["user_id"] = user["id"]
@@ -475,13 +478,18 @@ def logout():
 @app.get("/")
 @login_required
 def index():
+    if g.user["role"] in ADMIN_ROLES:
+        return redirect(url_for("admin_page"))
     return render_template("kiosk.html", user=g.user, company=COMPANY_NAME)
 
 
 @app.get("/admin")
 @roles_required("admin", "techadmin")
 def admin_page():
-    return render_template("admin.html", user=g.user, company=COMPANY_NAME)
+    default_tab = "monitor" if g.user["role"] == "techadmin" else "dashboard"
+    return render_template(
+        "admin.html", user=g.user, company=COMPANY_NAME, default_tab=default_tab
+    )
 
 
 @app.get("/receipt/<int:weighing_id>")
@@ -590,7 +598,11 @@ def cancel_weighing(weighing_id: int):
             return jsonify(success=False, message="To'langan yozuvni bekor qilib bo'lmaydi"), 409
         if row["status"] != "cancelled":
             conn.execute(
-                "UPDATE weighings SET status = 'cancelled', cancelled_at = NOW() WHERE id = %s",
+                """
+                UPDATE weighings
+                SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                """,
                 (weighing_id,),
             )
     return jsonify(success=True)
@@ -613,7 +625,7 @@ def pay_weighing(weighing_id: int):
             row = conn.execute(
                 """
                 UPDATE weighings
-                SET status = 'paid', paid_at = NOW(), payment_method = %s
+                SET status = 'paid', paid_at = NOW(), payment_method = %s, updated_at = NOW()
                 WHERE id = %s
                 RETURNING *
                 """,
@@ -621,6 +633,34 @@ def pay_weighing(weighing_id: int):
             ).fetchone()
             row["operator"] = g.user["username"]
     return jsonify(success=True, receipt=receipt_payload(row))
+
+
+@app.get("/api/sync/state")
+@login_required
+def sync_state():
+    """A lightweight shared version used by all open devices.
+
+    Clients only refresh their visible data after this value changes, which keeps
+    forms and typed text intact while avoiding repeated heavy dashboard queries.
+    """
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                GREATEST(
+                    COALESCE((SELECT MAX(updated_at) FROM weighings), TIMESTAMPTZ '1970-01-01'),
+                    COALESCE((SELECT MAX(updated_at) FROM settings), TIMESTAMPTZ '1970-01-01'),
+                    COALESCE((SELECT MAX(updated_at) FROM users), TIMESTAMPTZ '1970-01-01'),
+                    COALESCE((SELECT MAX(imported_at) FROM import_batches), TIMESTAMPTZ '1970-01-01')
+                ) AS changed_at
+            """
+        ).fetchone()
+    changed = localize(row["changed_at"])
+    return jsonify(
+        success=True,
+        version=changed.isoformat(),
+        server_time=now_local().isoformat(),
+    )
 
 
 @app.get("/api/weighings/<int:weighing_id>/receipt")
@@ -1553,7 +1593,7 @@ def system_status():
         },
         application={
             "active_users": database["active_users"],
-            "version": "2.4 Pro",
+            "version": "2.5 Pro",
             "environment": os.getenv("RENDER_SERVICE_NAME", "local"),
             "last_import": (
                 {

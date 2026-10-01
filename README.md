@@ -1,4 +1,4 @@
-# Tarozi Kiosk 2.4 Pro
+# Tarozi Kiosk 2.5 Pro
 
 AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi GitHub → Render orqali ishlaydi, doimiy ma'lumotlar Supabase PostgreSQL bazasida saqlanadi. Windows lokal agenti termal printerga dialogsız ESC/POS chek yuboradi va har kuni Supabase ma'lumotlarini kompyuterdagi tanlangan papkaga SQLite `.db` backup qiladi.
 
@@ -6,9 +6,10 @@ AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi G
 
 - Barcha sahifalardan oldin majburiy login.
 - `operator`, `admin`, `techadmin` rollari.
-- Operator: yangi operatsiya, to'lov usuli, to'lovni tasdiqlash va chek chiqarish.
-- Admin: dashboard, hisobot, qidiruv, tarix, CSV/Excel eksport va eski SQLite import.
-- Techadmin: admin imkoniyatlari, narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, backup tokenlari va tizim monitoringi.
+- Operator loginidan keyin to'g'ridan-to'g'ri kiosk: yangi operatsiya, to'lov usuli, to'lovni tasdiqlash va chek chiqarish.
+- Admin loginidan keyin alohida admin dashboard: hisobot, qidiruv, tarix, CSV/Excel eksport va eski SQLite import.
+- Techadmin loginidan keyin alohida texnik monitoring dashboardi: narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, backup tokenlari va tizim monitoringi.
+- Ochiq qurilmalar Supabase'dagi o'zgarish versiyasini yengil so'rov bilan kuzatadi; faqat o'zgarish bo'lganda ko'rinayotgan ma'lumot yangilanadi va kiritilayotgan matn saqlanadi.
 - Parollar `scrypt` bilan xeshlanadi. Amaldagi parolni ko'rib bo'lmaydi; techadmin faqat yangi parol o'rnatadi.
 - To'langan yozuv o'chirilmaydi. Kutilayotgan operatsiya bekor qilinsa `cancelled` holatiga o'tadi.
 - SQLite import takroriy yozuvlarni fingerprint orqali o'tkazib yuboradi.
@@ -54,7 +55,7 @@ GitHub'da bo'sh repository yarating, keyin shu papkada:
 ```powershell
 git init
 git add .
-git commit -m "Tarozi Kiosk 2.4 Pro"
+git commit -m "Tarozi Kiosk 2.5 Pro"
 git branch -M main
 git remote add origin https://github.com/USERNAME/REPOSITORY.git
 git push -u origin main
@@ -96,7 +97,7 @@ Parol: Render'da INITIAL_TECHADMIN_PASSWORD uchun bergan qiymat
 1. Techadmin yoki admin bilan kiring.
 2. **Import va Backup** bo'limini oching.
 3. `.db`, `.sqlite` yoki `.sqlite3` faylni tanlang.
-4. **Importni boshlash** tugmasini bosing.
+4. **Importni boshlash** tugmasini bosing. Yuklash foizi va keyingi Supabase'ga yozish bosqichi ekranda ko'rinadi.
 
 Import quyidagilarni qiladi:
 
@@ -182,8 +183,8 @@ Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 
 | Funksiya | Operator | Admin | Techadmin |
 |---|:---:|:---:|:---:|
-| Kiosk va chek | ✓ | ✓ | ✓ |
-| Dashboard/hisobot/qidiruv | — | ✓ | ✓ |
+| Kiosk va chek | ✓ | — | — |
+| O'zining dashboardi/hisobot/qidiruv | — | ✓ | ✓ |
 | SQLite import | — | ✓ | ✓ |
 | Qo'lda to'liq backup | — | — | ✓ |
 | Narxni o'zgartirish | — | — | ✓ |
@@ -198,7 +199,7 @@ Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 - Render Free service bo'sh turganda uxlab qolishi mumkin; birinchi so'rov sekinroq ochilishi ehtimoli bor.
 - `SECRET_KEY`, `DATABASE_URL`, boshlang'ich parol va backup tokenini GitHub'ga yozmang.
 - `local_agent_config.json` maxfiy token saqlaydi va `.gitignore`ga kiritilgan.
-- Techadmin monitoringi Gunicorn worker telemetriyasini ko'rsatadi; bir nechta worker bo'lsa so'rov soni aynan javob bergan worker bo'yicha bo'lishi mumkin.
+- Render Free xotirasini tejash uchun loyiha bitta Gunicorn worker va to'rtta threadda ishlaydi.
 
 ## Loglar
 

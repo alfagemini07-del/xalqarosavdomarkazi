@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS weighings (
     price BIGINT NOT NULL CHECK (price >= 0),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'cancelled')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     business_date DATE NOT NULL,
     paid_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ,
@@ -53,8 +54,10 @@ CREATE TABLE IF NOT EXISTS weighings (
 );
 
 ALTER TABLE weighings ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'cash';
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS idx_weighings_created_at ON weighings (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_weighings_updated_at ON weighings (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_weighings_business_date ON weighings (business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_weighings_status_date ON weighings (status, business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_weighings_plate_search ON weighings (plate_search);
