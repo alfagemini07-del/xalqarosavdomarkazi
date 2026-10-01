@@ -20,6 +20,6 @@ footer { font-size: 12px; }
 .print-actions button:last-child { background: #64748b; }
 @media print {
   html, body { width: 80mm; margin: 0; padding: 0; background: #fff; }
-  .receipt { width: 80mm; max-width: none; margin: 0; break-inside: avoid; }
+  .receipt { width: 80mm; max-width: none; margin: 0; box-shadow: none; break-inside: avoid; page-break-inside: avoid; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .print-actions { display: none; }
 }

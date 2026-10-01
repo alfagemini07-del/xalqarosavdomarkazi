@@ -2,6 +2,7 @@
   "use strict";
   const csrf = document.body.dataset.csrf;
   const role = document.body.dataset.role;
+  const localAgentEnabled = document.body.dataset.localPrinterAgent === "1";
   let weeklyData = [];
   let reportData = [];
   let reportPage = 1;
@@ -61,6 +62,7 @@
   function setClock() { document.getElementById("admin-clock").textContent = new Date().toLocaleTimeString("uz-UZ", { hour12: false }); }
   async function checkAgent() {
     const label = document.getElementById("admin-printer-status"); if (!label) return;
+    if (!localAgentEnabled) { label.textContent = "Brauzer rejimi"; label.parentElement.classList.add("offline"); return; }
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000);
     try { const response = await fetch("http://127.0.0.1:17832/health", { signal: controller.signal, cache: "no-store" }); const data = await response.json(); if (!response.ok) throw new Error(); label.textContent = data.printer || "Tayyor"; label.parentElement.classList.remove("offline"); }
     catch (_error) { label.textContent = "Brauzer rejimi"; label.parentElement.classList.add("offline"); }
@@ -138,7 +140,7 @@
   async function localPrint(receipt) { const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 4000); try { const response = await fetch("http://127.0.0.1:17832/print", { method: "POST", mode: "cors", headers: { "Content-Type": "application/json" }, body: JSON.stringify(receipt), signal: controller.signal }); const data = await response.json().catch(() => ({})); if (!response.ok || !data.success) throw new Error(data.message || "Printer agenti xatosi"); return data; } finally { clearTimeout(timer); } }
   async function reprint(id, button) {
     setBusy(button, true, "..."); const fallback = window.open("about:blank", "tarozi-receipt", "width=520,height=800");
-    try { const data = await api(`/api/weighings/${id}/receipt`); if (fallback) fallback.location.href = `/receipt/${id}`; try { const printed = await localPrint(data.receipt); showToast(`Chek ${printed.printer || "printer"}ga yuborildi`); } catch (_error) { if (fallback) fallback.location.href = `/receipt/${id}?autoprint=1`; else window.location.href = `/receipt/${id}?autoprint=1`; showToast("Brauzer chop etish oynasi ochildi"); } }
+    try { const data = await api(`/api/weighings/${id}/receipt`); if (!localAgentEnabled) { if (fallback) fallback.location.href = `/receipt/${id}?autoprint=1`; else window.location.href = `/receipt/${id}?autoprint=1`; showToast("Brauzer chop etish oynasi ochildi"); return; } if (fallback) fallback.location.href = `/receipt/${id}`; try { const printed = await localPrint(data.receipt); showToast(`Chek ${printed.printer || "printer"}ga yuborildi`); } catch (_error) { if (fallback) fallback.location.href = `/receipt/${id}?autoprint=1`; else window.location.href = `/receipt/${id}?autoprint=1`; showToast("Brauzer chop etish oynasi ochildi"); } }
     catch (error) { if (fallback) fallback.close(); showToast(error.message, true); } finally { setBusy(button, false); }
   }
 
@@ -270,5 +272,5 @@
   if (role === "techadmin") { document.getElementById("btn-refresh-monitor").addEventListener("click", () => loadMonitor()); document.getElementById("btn-save-price").addEventListener("click", savePrice); document.getElementById("btn-create-user").addEventListener("click", createUser); document.getElementById("btn-reset-password").addEventListener("click", resetPassword); document.getElementById("btn-create-token").addEventListener("click", createToken); document.getElementById("users-page-size").addEventListener("change", () => { usersPage = 1; loadUsers(); }); document.getElementById("users-prev").addEventListener("click", () => { if (usersPage > 1) { usersPage -= 1; loadUsers(); } }); document.getElementById("users-next").addEventListener("click", () => { if (usersPage < usersPages) { usersPage += 1; loadUsers(); } }); document.getElementById("btn-open-clear-data").addEventListener("click", openClearDataModal); document.getElementById("clear-data-password").addEventListener("input", validateClearDataConfirmation); document.getElementById("clear-data-confirmation").addEventListener("input", validateClearDataConfirmation); document.getElementById("btn-confirm-clear-data").addEventListener("click", clearOperationalData); }
   document.getElementById("manual-backup-name").textContent = `${new Date().toLocaleDateString("uz-UZ")} 00-00 holatiga backup.db`;
   window.addEventListener("resize", () => { if (weeklyData.length) drawBarChart("weekly-chart", weeklyData, { highlightLast: true }); if (reportData.length) drawBarChart("report-chart", reportData); if (systemData.length) drawBarChart("system-chart", systemData, { highlightLast: true }); });
-  setClock(); setInterval(setClock, 1000); checkAgent(); setInterval(checkAgent, 30000); setReportRange("week"); activateTab(activeTab); pollSync(); setInterval(pollSync, 12000); document.addEventListener("visibilitychange", () => { if (!document.hidden) pollSync(); });
+  setClock(); setInterval(setClock, 1000); checkAgent(); if (localAgentEnabled) setInterval(checkAgent, 30000); setReportRange("week"); activateTab(activeTab); pollSync(); setInterval(pollSync, 12000); document.addEventListener("visibilitychange", () => { if (!document.hidden) pollSync(); });
 })();

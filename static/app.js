@@ -15,6 +15,7 @@
   const reloadFeeInput = document.getElementById("reload-fee-input");
   const receiptPreviewModal = document.getElementById("receipt-preview-modal");
   const receiptPreviewFrame = document.getElementById("receipt-preview-frame");
+  const localAgentEnabled = document.body.dataset.localPrinterAgent === "1";
   let current = null;
   let paymentMethod = "cash";
   let servicePrices = { weighing: 30000, entry: 30000, reload: 30000 };
@@ -26,6 +27,7 @@
   let journalPages = 1;
   let journalRequestId = 0;
   let receiptPrintPending = false;
+  let receiptPreviewUrl = "";
   let localAgentReady = false;
   const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ");
 
@@ -110,6 +112,13 @@
 
   async function checkLocalAgent() {
     const status = document.getElementById("printer-status");
+    if (!localAgentEnabled) {
+      localAgentReady = false;
+      status.classList.add("offline");
+      status.querySelector("b").textContent = "Brauzer rejimi";
+      document.getElementById("printer-name").textContent = "Brauzer orqali chop etish";
+      return;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2200);
     try {
@@ -357,10 +366,18 @@
 
   function printReceiptPreview() {
     try {
-      receiptPreviewFrame.contentWindow.focus();
-      receiptPreviewFrame.contentWindow.print();
+      const frameWindow = receiptPreviewFrame.contentWindow;
+      const frameDocument = receiptPreviewFrame.contentDocument;
+      if (!frameWindow || !frameDocument?.querySelector(".receipt")) throw new Error("Chek oynasi yuklanmagan");
+      frameWindow.focus();
+      frameWindow.print();
     } catch (_error) {
-      showToast("Chop etish oynasi ochilmadi. Chekni yangi oynada ochib ko'ring.", true);
+      const directUrl = receiptPreviewUrl.replace("embedded=1", "autoprint=1");
+      const popup = directUrl ? window.open(directUrl, "tarozi-receipt", "width=520,height=800") : null;
+      showToast(
+        popup ? "Chek alohida oynada ochildi" : "Chop etish oynasi bloklandi. Brauzerda pop-up oynalarga ruxsat bering.",
+        !popup,
+      );
     }
   }
 
@@ -374,13 +391,15 @@
     document.getElementById("receipt-frame-loading").classList.remove("hidden");
     receiptPreviewFrame.classList.add("loading");
     receiptPreviewModal.classList.remove("hidden");
-    receiptPreviewFrame.src = `/receipt/${weighingId}?embedded=1`;
+    receiptPreviewUrl = `/receipt/${weighingId}?embedded=1`;
+    receiptPreviewFrame.src = receiptPreviewUrl;
   }
 
   function closeReceiptPreview() {
     receiptPrintPending = false;
     receiptPreviewModal.classList.add("hidden");
     receiptPreviewFrame.src = "about:blank";
+    receiptPreviewUrl = "";
   }
 
   async function confirmAndPrint() {
@@ -427,6 +446,10 @@
 
   async function feedPaper() {
     const button = document.getElementById("btn-test-feed");
+    if (!localAgentEnabled) {
+      showToast("Qog'ozni surish lokal printer agenti o'rnatilganda ishlaydi", true);
+      return;
+    }
     button.disabled = true;
     try {
       const response = await fetch("http://127.0.0.1:17832/feed", { method: "POST", mode: "cors", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -449,6 +472,13 @@
   document.getElementById("operator-backup").addEventListener("click", saveOperatorBackup);
   receiptPreviewFrame.addEventListener("load", () => {
     if (!receiptPreviewFrame.src.includes("/receipt/")) return;
+    const hasReceipt = Boolean(receiptPreviewFrame.contentDocument?.querySelector(".receipt"));
+    if (!hasReceipt) {
+      receiptPrintPending = false;
+      document.getElementById("receipt-frame-loading").textContent = "Chek oynasi yuklanmadi. Chop etish tugmasini qayta bosing.";
+      receiptPreviewFrame.classList.remove("loading");
+      return;
+    }
     document.getElementById("receipt-frame-loading").classList.add("hidden"); receiptPreviewFrame.classList.remove("loading");
     if (receiptPrintPending) { receiptPrintPending = false; setTimeout(printReceiptPreview, 500); }
   });
@@ -482,5 +512,5 @@
   setClock(); setInterval(setClock, 1000);
   loadStats(); pollSync(); setInterval(pollSync, 12000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { pollSync(); loadStats(); } });
-  checkLocalAgent(); setInterval(checkLocalAgent, 30000);
+  checkLocalAgent(); if (localAgentEnabled) setInterval(checkLocalAgent, 30000);
 })();
