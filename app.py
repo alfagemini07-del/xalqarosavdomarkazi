@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import atexit
 import csv
 import hashlib
 import hmac
@@ -45,6 +46,9 @@ from werkzeug.utils import secure_filename
 BASE_DIR = Path(__file__).resolve().parent
 COMPANY_NAME = "AIRITOM LOGISTICS CENTER MCHJ"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+SESSION_SECRET = os.getenv("SECRET_KEY", "").strip() or hashlib.sha256(
+    f"tarozi-kiosk-session:{DATABASE_URL}".encode("utf-8")
+).hexdigest()
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Tashkent"))
 DB_POOL_SIZE = max(1, min(int(os.getenv("DB_POOL_SIZE", "5")), 20))
 SUPABASE_DB_LIMIT_BYTES = max(
@@ -58,13 +62,15 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-app.secret_key = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+app.secret_key = SESSION_SECRET
 app.config.update(
     MAX_CONTENT_LENGTH=256 * 1024 * 1024,
+    SESSION_COOKIE_NAME="tarozi_session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "true").lower() == "true",
     SESSION_COOKIE_SAMESITE="Lax",
-    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=3650),
+    SESSION_REFRESH_EACH_REQUEST=True,
 )
 
 
@@ -78,6 +84,18 @@ _request_durations_ms: deque[float] = deque(maxlen=500)
 _request_count = 0
 _error_count = 0
 _process = psutil.Process(os.getpid())
+
+
+def close_database_pool() -> None:
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.close()
+        finally:
+            _pool = None
+
+
+atexit.register(close_database_pool)
 
 
 def now_local() -> datetime:
@@ -148,6 +166,19 @@ def ensure_schema() -> None:
                 """,
                 (initial_price,),
             )
+            for key, env_name in (
+                ("entry_service_price", "INITIAL_ENTRY_PRICE"),
+                ("reload_service_price", "INITIAL_RELOAD_PRICE"),
+            ):
+                value = str(max(0, int(os.getenv(env_name, "30000"))))
+                conn.execute(
+                    """
+                    INSERT INTO settings (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                    """,
+                    (key, value),
+                )
         _schema_ready = True
 
 
@@ -166,7 +197,7 @@ app.jinja_env.globals["csrf_token"] = csrf_token
 def load_request_context():
     g.request_started = time.perf_counter()
     g.user = None
-    if request.endpoint in {"static", "health"}:
+    if request.endpoint in {"static", "health", "favicon"}:
         return None
     ensure_schema()
     user_id = session.get("user_id")
@@ -287,6 +318,33 @@ def get_current_price(conn=None) -> int:
         return query(active_conn)
 
 
+def get_service_prices(conn=None) -> dict[str, int]:
+    defaults = {
+        "weighing": 30000,
+        "entry": 30000,
+        "reload": 30000,
+    }
+
+    def query(active_conn) -> dict[str, int]:
+        rows = active_conn.execute(
+            """
+            SELECT key, value FROM settings
+            WHERE key IN ('weighing_price', 'entry_service_price', 'reload_service_price')
+            """
+        ).fetchall()
+        values = {row["key"]: max(0, int(row["value"])) for row in rows}
+        return {
+            "weighing": values.get("weighing_price", defaults["weighing"]),
+            "entry": values.get("entry_service_price", defaults["entry"]),
+            "reload": values.get("reload_service_price", defaults["reload"]),
+        }
+
+    if conn is not None:
+        return query(conn)
+    with get_pool().connection() as active_conn:
+        return query(active_conn)
+
+
 def money(value: int) -> str:
     return f"{int(value):,}".replace(",", " ")
 
@@ -302,12 +360,29 @@ def localize(value: datetime | None) -> datetime | None:
 def serialize_weighing(row: dict) -> dict:
     created = localize(row["created_at"])
     paid_at = localize(row.get("paid_at"))
+    total = int(row.get("price") or 0)
+    weighing_fee = int(row.get("weighing_fee") or total)
+    entry_fee = int(row.get("entry_fee") or 0)
+    reload_fee = int(row.get("reload_fee") or 0)
+    public_token = row.get("public_token")
     return {
         "id": row["id"],
         "receipt_no": row["receipt_no"],
         "plate_number": row["plate_number"],
-        "price": row["price"],
-        "price_fmt": money(row["price"]),
+        "price": total,
+        "price_fmt": money(total),
+        "total": total,
+        "total_fmt": money(total),
+        "weight_kg": int(row.get("weight_kg") or 0),
+        "weight_fmt": money(int(row.get("weight_kg") or 0)),
+        "weighing_fee": weighing_fee,
+        "weighing_fee_fmt": money(weighing_fee),
+        "entry_service": bool(row.get("entry_service")),
+        "entry_fee": entry_fee,
+        "entry_fee_fmt": money(entry_fee),
+        "reload_service": bool(row.get("reload_service")),
+        "reload_fee": reload_fee,
+        "reload_fee_fmt": money(reload_fee),
         "status": row["status"],
         "created_at": created.strftime("%d.%m.%Y %H:%M:%S"),
         "created_iso": created.isoformat(),
@@ -317,6 +392,7 @@ def serialize_weighing(row: dict) -> dict:
         "operator": row.get("operator") or "—",
         "source": row.get("source") or "web",
         "payment_method": row.get("payment_method") or "cash",
+        "public_url": url_for("public_receipt", token=public_token, _external=True) if public_token else None,
     }
 
 
@@ -336,15 +412,23 @@ def make_qr_base64(text: str) -> str:
 
 def receipt_payload(row: dict) -> dict:
     data = serialize_weighing(row)
-    qr_text = (
-        f"{COMPANY_NAME}\n"
-        f"Chek: {data['receipt_no']}\n"
-        f"Mashina: {data['plate_number']}\n"
-        f"Sana: {data['created_at']}\n"
-        f"Narx: {data['price_fmt']} so'm"
+    qr_text = data["public_url"] or (
+        f"{COMPANY_NAME}\nChek: {data['receipt_no']}\nJami: {data['total_fmt']} so'm"
     )
     data.update(company=COMPANY_NAME, qr_text=qr_text)
     return data
+
+
+def ensure_public_token(conn, row: dict) -> dict:
+    if row.get("public_token"):
+        return row
+    token = secrets.token_urlsafe(24)
+    conn.execute(
+        "UPDATE weighings SET public_token = %s, updated_at = NOW() WHERE id = %s",
+        (token, row["id"]),
+    )
+    row["public_token"] = token
+    return row
 
 
 def get_weighing(conn, weighing_id: int) -> dict | None:
@@ -431,6 +515,11 @@ def health():
         return jsonify(status="error"), 503
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return redirect(url_for("static", filename="favicon.ico"), code=308)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if g.user:
@@ -497,16 +586,41 @@ def admin_page():
 def receipt_page(weighing_id: int):
     with get_pool().connection() as conn:
         row = get_weighing(conn, weighing_id)
-    if not row or not can_access_weighing(row):
-        abort(404)
-    if row["status"] != "paid":
-        abort(409)
-    payload = receipt_payload(row)
+        if not row or not can_access_weighing(row):
+            abort(404)
+        if row["status"] != "paid":
+            abort(409)
+        row = ensure_public_token(conn, row)
+        payload = receipt_payload(row)
     payload["qr_b64"] = make_qr_base64(payload["qr_text"])
     return render_template(
         "receipt.html",
         receipt=payload,
         auto_print=request.args.get("autoprint") == "1",
+        public_view=False,
+    )
+
+
+@app.get("/r/<token>")
+def public_receipt(token: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token):
+        abort(404)
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            """
+            SELECT w.*, u.username AS operator
+            FROM weighings w
+            LEFT JOIN users u ON u.id = w.created_by
+            WHERE w.public_token = %s AND w.status = 'paid'
+            """,
+            (token,),
+        ).fetchone()
+    if not row:
+        abort(404)
+    payload = receipt_payload(row)
+    payload["qr_b64"] = make_qr_base64(payload["qr_text"])
+    return render_template(
+        "receipt.html", receipt=payload, auto_print=False, public_view=True
     )
 
 
@@ -523,12 +637,14 @@ def api_today_stats():
             """,
             (today,),
         ).fetchone()
-        price = get_current_price(conn)
+        service_prices = get_service_prices(conn)
     return jsonify(
         count=row["count"],
         total=row["total"],
         total_fmt=money(row["total"]),
-        current_price=price,
+        current_price=service_prices["weighing"],
+        entry_price=service_prices["entry"],
+        reload_price=service_prices["reload"],
     )
 
 
@@ -561,7 +677,9 @@ def create_weighing():
     created = now_local()
     business_date = created.date()
     with get_pool().connection() as conn:
-        price = get_current_price(conn)
+        service_prices = get_service_prices(conn)
+        price = service_prices["weighing"]
+        public_token = secrets.token_urlsafe(24)
         seq_row = conn.execute(
             """
             INSERT INTO daily_sequences (business_date, next_value)
@@ -577,14 +695,22 @@ def create_weighing():
             """
             INSERT INTO weighings (
                 receipt_no, plate_number, plate_search, price, status,
-                created_at, business_date, created_by, source
-            ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, 'web')
+                weighing_fee, created_at, business_date, created_by, source,
+                public_token
+            ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, 'web', %s)
             RETURNING *
             """,
-            (receipt_no, plate, plate_search, price, created, business_date, g.user["id"]),
+            (
+                receipt_no, plate, plate_search, price, price, created,
+                business_date, g.user["id"], public_token,
+            ),
         ).fetchone()
         row["operator"] = g.user["username"]
-    return jsonify(success=True, weighing=serialize_weighing(row))
+    return jsonify(
+        success=True,
+        weighing=serialize_weighing(row),
+        service_prices=service_prices,
+    )
 
 
 @app.post("/api/weighings/<int:weighing_id>/cancel")
@@ -615,23 +741,54 @@ def pay_weighing(weighing_id: int):
     payment_method = data.get("payment_method", "cash")
     if payment_method not in {"cash", "card", "bank"}:
         return jsonify(success=False, message="To'lov usuli noto'g'ri"), 400
+    try:
+        weight_kg = int(data.get("weight_kg"))
+    except (TypeError, ValueError):
+        return jsonify(success=False, message="Vaznni kilogrammda kiriting"), 400
+    if weight_kg < 1 or weight_kg > 1_000_000:
+        return jsonify(success=False, message="Vazn 1–1 000 000 kg oralig'ida bo'lishi kerak"), 400
+    entry_service = data.get("entry_service") is True
+    reload_service = data.get("reload_service") is True
     with get_pool().connection() as conn:
-        row = get_weighing(conn, weighing_id)
+        row = conn.execute(
+            """
+            SELECT w.*, u.username AS operator
+            FROM weighings w
+            LEFT JOIN users u ON u.id = w.created_by
+            WHERE w.id = %s
+            FOR UPDATE OF w
+            """,
+            (weighing_id,),
+        ).fetchone()
         if not row or not can_access_weighing(row):
             return jsonify(success=False, message="Yozuv topilmadi"), 404
         if row["status"] == "cancelled":
             return jsonify(success=False, message="Bekor qilingan yozuvni to'lab bo'lmaydi"), 409
         if row["status"] == "pending":
+            service_prices = get_service_prices(conn)
+            weighing_fee = int(row.get("weighing_fee") or row.get("price") or service_prices["weighing"])
+            entry_fee = service_prices["entry"] if entry_service else 0
+            reload_fee = service_prices["reload"] if reload_service else 0
+            total = weighing_fee + entry_fee + reload_fee
             row = conn.execute(
                 """
                 UPDATE weighings
-                SET status = 'paid', paid_at = NOW(), payment_method = %s, updated_at = NOW()
+                SET status = 'paid', paid_at = NOW(), payment_method = %s,
+                    weight_kg = %s, weighing_fee = %s,
+                    entry_service = %s, entry_fee = %s,
+                    reload_service = %s, reload_fee = %s,
+                    price = %s, updated_at = NOW()
                 WHERE id = %s
                 RETURNING *
                 """,
-                (payment_method, weighing_id),
+                (
+                    payment_method, weight_kg, weighing_fee,
+                    entry_service, entry_fee, reload_service, reload_fee,
+                    total, weighing_id,
+                ),
             ).fetchone()
             row["operator"] = g.user["username"]
+        row = ensure_public_token(conn, row)
     return jsonify(success=True, receipt=receipt_payload(row))
 
 
@@ -668,10 +825,11 @@ def sync_state():
 def receipt_data(weighing_id: int):
     with get_pool().connection() as conn:
         row = get_weighing(conn, weighing_id)
-    if not row or not can_access_weighing(row):
-        return jsonify(success=False, message="Chek topilmadi"), 404
-    if row["status"] != "paid":
-        return jsonify(success=False, message="To'lov tasdiqlanmagan"), 409
+        if not row or not can_access_weighing(row):
+            return jsonify(success=False, message="Chek topilmadi"), 404
+        if row["status"] != "paid":
+            return jsonify(success=False, message="To'lov tasdiqlanmagan"), 409
+        row = ensure_public_token(conn, row)
     return jsonify(success=True, receipt=receipt_payload(row))
 
 
@@ -686,13 +844,16 @@ def admin_dashboard():
             SELECT
                 COUNT(*) FILTER (WHERE business_date = %s AND status = 'paid') AS today_count,
                 COALESCE(SUM(price) FILTER (WHERE business_date = %s AND status = 'paid'), 0) AS today_total,
+                COALESCE(SUM(weighing_fee) FILTER (WHERE business_date = %s AND status = 'paid'), 0) AS today_weighing_total,
+                COALESCE(SUM(entry_fee) FILTER (WHERE business_date = %s AND status = 'paid'), 0) AS today_entry_total,
+                COALESCE(SUM(reload_fee) FILTER (WHERE business_date = %s AND status = 'paid'), 0) AS today_reload_total,
                 COUNT(*) FILTER (WHERE business_date BETWEEN %s AND %s AND status = 'paid') AS week_count,
                 COALESCE(SUM(price) FILTER (
                     WHERE business_date BETWEEN %s AND %s AND status = 'paid'
                 ), 0) AS week_total
             FROM weighings
             """,
-            (today, today, week_start, today, week_start, today),
+            (today, today, today, today, today, week_start, today, week_start, today),
         ).fetchone()
         rows = conn.execute(
             """
@@ -722,6 +883,14 @@ def admin_dashboard():
         today_count=summary["today_count"],
         today_total=summary["today_total"],
         today_total_fmt=money(summary["today_total"]),
+        today_services={
+            "weighing": summary["today_weighing_total"],
+            "weighing_fmt": money(summary["today_weighing_total"]),
+            "entry": summary["today_entry_total"],
+            "entry_fmt": money(summary["today_entry_total"]),
+            "reload": summary["today_reload_total"],
+            "reload_fmt": money(summary["today_reload_total"]),
+        },
         week_count=summary["week_count"],
         week_total=summary["week_total"],
         week_total_fmt=money(summary["week_total"]),
@@ -813,6 +982,17 @@ def admin_report():
             """,
             (start, end),
         ).fetchall()
+        service_totals = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(weighing_fee), 0) AS weighing,
+                COALESCE(SUM(entry_fee), 0) AS entry,
+                COALESCE(SUM(reload_fee), 0) AS reload
+            FROM weighings
+            WHERE business_date BETWEEN %s AND %s AND status = 'paid'
+            """,
+            (start, end),
+        ).fetchone()
     total_count = sum(row["count"] for row in rows)
     total_revenue = sum(row["total"] for row in rows)
     return jsonify(
@@ -820,6 +1000,14 @@ def admin_report():
         total_count=total_count,
         total_revenue=total_revenue,
         total_fmt=money(total_revenue),
+        service_totals={
+            "weighing": service_totals["weighing"],
+            "weighing_fmt": money(service_totals["weighing"]),
+            "entry": service_totals["entry"],
+            "entry_fmt": money(service_totals["entry"]),
+            "reload": service_totals["reload"],
+            "reload_fmt": money(service_totals["reload"]),
+        },
         payment_methods={
             row["payment_method"]: {
                 "count": row["count"],
@@ -874,7 +1062,11 @@ def export_weighings_csv():
     try:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
-            ["Chek", "Davlat raqami", "Narx", "Holat", "To'lov usuli", "Sana va vaqt", "Operator", "Manba"]
+            [
+                "Chek", "Davlat raqami", "Vazn (kg)", "Vazn o'lchash",
+                "Hududga kirish", "Qayta yuklash", "Jami", "Holat",
+                "To'lov usuli", "Sana va vaqt", "Operator", "Manba",
+            ]
         )
         with get_pool().connection() as conn:
             with conn.cursor(name=f"export_{uuid.uuid4().hex}") as cursor:
@@ -896,8 +1088,10 @@ def export_weighings_csv():
                         item = serialize_weighing(row)
                         writer.writerow(
                             [
-                                item["receipt_no"], item["plate_number"], item["price"], item["status"],
-                                item["payment_method"], item["created_at"], item["operator"], item["source"],
+                                item["receipt_no"], item["plate_number"], item["weight_kg"],
+                                item["weighing_fee"], item["entry_fee"], item["reload_fee"],
+                                item["total"], item["status"], item["payment_method"],
+                                item["created_at"], item["operator"], item["source"],
                             ]
                         )
         handle.close()
@@ -992,6 +1186,13 @@ def import_sqlite():
                 "legacy_receipt_no",
                 "legacy_fingerprint",
                 "payment_method",
+                "weight_kg",
+                "weighing_fee",
+                "entry_fee",
+                "reload_fee",
+                "entry_service",
+                "reload_service",
+                "public_token",
             )
             if name in columns
         ]
@@ -1057,12 +1258,26 @@ def import_sqlite():
                     payment_method = row.get("payment_method") or "cash"
                     if payment_method not in {"cash", "card", "bank"}:
                         payment_method = "cash"
+                    weight_kg = max(0, int(row.get("weight_kg") or 0))
+                    weighing_fee = max(0, int(row.get("weighing_fee") or price))
+                    entry_service = bool(int(row.get("entry_service") or 0))
+                    reload_service = bool(int(row.get("reload_service") or 0))
+                    entry_fee = max(0, int(row.get("entry_fee") or 0)) if entry_service else 0
+                    reload_fee = max(0, int(row.get("reload_fee") or 0)) if reload_service else 0
+                    public_token = str(row.get("public_token") or secrets.token_urlsafe(24))[:100]
                     values.append(
                         (
                             str(receipt_no)[:80],
                             plate,
                             plate_search,
                             price,
+                            weight_kg,
+                            weighing_fee,
+                            entry_fee,
+                            reload_fee,
+                            entry_service,
+                            reload_service,
+                            public_token,
                             status,
                             created_at,
                             business_date,
@@ -1081,14 +1296,17 @@ def import_sqlite():
                     pg_cursor.executemany(
                         """
                         INSERT INTO weighings (
-                            receipt_no, plate_number, plate_search, price, status,
+                            receipt_no, plate_number, plate_search, price,
+                            weight_kg, weighing_fee, entry_fee, reload_fee,
+                            entry_service, reload_service, public_token, status,
                             created_at, business_date, paid_at, cancelled_at,
                             created_by, source, legacy_id, legacy_receipt_no,
                             legacy_fingerprint, import_batch_id
                             , payment_method
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s, %s
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s
                         )
                         ON CONFLICT DO NOTHING
                         """,
@@ -1133,32 +1351,53 @@ def import_sqlite():
 @app.get("/api/admin/settings/price")
 @roles_required("admin", "techadmin")
 def get_price_setting():
-    return jsonify(success=True, price=get_current_price())
+    prices = get_service_prices()
+    return jsonify(
+        success=True,
+        price=prices["weighing"],
+        entry_price=prices["entry"],
+        reload_price=prices["reload"],
+    )
 
 
 @app.put("/api/admin/settings/price")
 @roles_required("techadmin")
 def update_price_setting():
     data = request.get_json(silent=True) or {}
-    try:
-        price = int(data.get("price"))
-    except (TypeError, ValueError):
-        return jsonify(success=False, message="Narx noto'g'ri"), 400
-    if price < 0 or price > 1_000_000_000:
-        return jsonify(success=False, message="Narx ruxsat etilgan oraliqda emas"), 400
     with get_pool().connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO settings (key, value, updated_at, updated_by)
-            VALUES ('weighing_price', %s, NOW(), %s)
-            ON CONFLICT (key) DO UPDATE SET
-                value = EXCLUDED.value,
-                updated_at = NOW(),
-                updated_by = EXCLUDED.updated_by
-            """,
-            (str(price), g.user["id"]),
-        )
-    return jsonify(success=True, price=price)
+        current = get_service_prices(conn)
+        try:
+            prices = {
+                "weighing": int(data.get("price", current["weighing"])),
+                "entry": int(data.get("entry_price", current["entry"])),
+                "reload": int(data.get("reload_price", current["reload"])),
+            }
+        except (TypeError, ValueError):
+            return jsonify(success=False, message="Narxlardan biri noto'g'ri"), 400
+        if any(value < 0 or value > 1_000_000_000 for value in prices.values()):
+            return jsonify(success=False, message="Narx ruxsat etilgan oraliqda emas"), 400
+        for key, value in (
+            ("weighing_price", prices["weighing"]),
+            ("entry_service_price", prices["entry"]),
+            ("reload_service_price", prices["reload"]),
+        ):
+            conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at, updated_by)
+                VALUES (%s, %s, NOW(), %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    updated_at = NOW(),
+                    updated_by = EXCLUDED.updated_by
+                """,
+                (key, str(value), g.user["id"]),
+            )
+    return jsonify(
+        success=True,
+        price=prices["weighing"],
+        entry_price=prices["entry"],
+        reload_price=prices["reload"],
+    )
 
 
 @app.get("/api/admin/users")
@@ -1379,6 +1618,13 @@ def create_sqlite_backup() -> str:
                 receipt_no TEXT NOT NULL,
                 plate_number TEXT NOT NULL,
                 price INTEGER NOT NULL,
+                weight_kg INTEGER NOT NULL DEFAULT 0,
+                weighing_fee INTEGER NOT NULL DEFAULT 0,
+                entry_fee INTEGER NOT NULL DEFAULT 0,
+                reload_fee INTEGER NOT NULL DEFAULT 0,
+                entry_service INTEGER NOT NULL DEFAULT 0,
+                reload_service INTEGER NOT NULL DEFAULT 0,
+                public_token TEXT,
                 paid INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -1399,7 +1645,7 @@ def create_sqlite_backup() -> str:
         backup.executemany(
             "INSERT INTO metadata (key, value) VALUES (?, ?)",
             [
-                ("format", "TaroziKiosk backup v2"),
+                ("format", "TaroziKiosk backup v3"),
                 ("created_at", now_local().isoformat()),
                 ("timezone", str(APP_TIMEZONE)),
             ],
@@ -1444,12 +1690,16 @@ def create_sqlite_backup() -> str:
                     backup.executemany(
                         """
                         INSERT INTO weighings VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?
                         )
                         """,
                         [
                             (
                                 row["id"], row["receipt_no"], row["plate_number"], row["price"],
+                                row["weight_kg"], row["weighing_fee"], row["entry_fee"],
+                                row["reload_fee"], int(row["entry_service"]),
+                                int(row["reload_service"]), row["public_token"],
                                 int(row["status"] == "paid"), row["status"],
                                 row["created_at"].isoformat(), row["business_date"].isoformat(),
                                 row["paid_at"].isoformat() if row["paid_at"] else None,
@@ -1593,7 +1843,7 @@ def system_status():
         },
         application={
             "active_users": database["active_users"],
-            "version": "2.5 Pro",
+            "version": "2.6 Pro",
             "environment": os.getenv("RENDER_SERVICE_NAME", "local"),
             "last_import": (
                 {

@@ -154,7 +154,16 @@ def build_receipt(receipt: dict) -> bytes:
     data += esc + b"E\x01" + esc + b"!\x20"
     data += line("Mashina:", receipt["plate_number"])
     data += esc + b"!\x00"
-    data += line("Narx:", f"{receipt['price_fmt']} so'm")
+    data += line("Vazni:", f"{receipt.get('weight_fmt', '0')} kg")
+    data += center("-" * width)
+    data += line("Vazn o'lchash:", f"{receipt.get('weighing_fee_fmt', receipt['price_fmt'])} so'm")
+    if receipt.get("entry_service"):
+        data += line("Hududga kirish:", f"{receipt.get('entry_fee_fmt', '0')} so'm")
+    if receipt.get("reload_service"):
+        data += line("Qayta yuklash:", f"{receipt.get('reload_fee_fmt', '0')} so'm")
+    data += esc + b"E\x01"
+    data += line("JAMI:", f"{receipt.get('total_fmt', receipt['price_fmt'])} so'm")
+    data += esc + b"E\x00"
     method = {"cash": "Naqd pul", "card": "Uzcard/Humo", "bank": "Hisob raqam"}.get(
         receipt.get("payment_method"), "Naqd pul"
     )
@@ -402,7 +411,14 @@ def main() -> int:
             sample = {
                 "receipt_no": "TEST/00001",
                 "plate_number": "01 A 123 BA",
-                "price_fmt": "30 000",
+                "weight_fmt": "24 500",
+                "weighing_fee_fmt": "30 000",
+                "entry_service": True,
+                "entry_fee_fmt": "30 000",
+                "reload_service": False,
+                "reload_fee_fmt": "0",
+                "total_fmt": "60 000",
+                "price_fmt": "60 000",
                 "created_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             }
             printer = print_raw(sample, config)

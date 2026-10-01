@@ -1,4 +1,4 @@
-# Tarozi Kiosk 2.5 Pro
+# Tarozi Kiosk 2.6 Pro
 
 AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi GitHub → Render orqali ishlaydi, doimiy ma'lumotlar Supabase PostgreSQL bazasida saqlanadi. Windows lokal agenti termal printerga dialogsız ESC/POS chek yuboradi va har kuni Supabase ma'lumotlarini kompyuterdagi tanlangan papkaga SQLite `.db` backup qiladi.
 
@@ -6,10 +6,13 @@ AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi G
 
 - Barcha sahifalardan oldin majburiy login.
 - `operator`, `admin`, `techadmin` rollari.
-- Operator loginidan keyin to'g'ridan-to'g'ri kiosk: yangi operatsiya, to'lov usuli, to'lovni tasdiqlash va chek chiqarish.
+- Operator loginidan keyin to'g'ridan-to'g'ri kiosk: vaznni kilogrammda qo'lda kiritish, xizmatlarni tanlash, to'lovni tasdiqlash va chek chiqarish.
 - Admin loginidan keyin alohida admin dashboard: hisobot, qidiruv, tarix, CSV/Excel eksport va eski SQLite import.
 - Techadmin loginidan keyin alohida texnik monitoring dashboardi: narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, backup tokenlari va tizim monitoringi.
 - Ochiq qurilmalar Supabase'dagi o'zgarish versiyasini yengil so'rov bilan kuzatadi; faqat o'zgarish bo'lganda ko'rinayotgan ma'lumot yangilanadi va kiritilayotgan matn saqlanadi.
+- Vazn o'lchash, hududga kirganlik va qayta yuklash narxlari alohida saqlanadi; techadmin uchalasini ham o'zgartiradi.
+- Chekda avtomobil vazni, har bir tanlangan xizmat va yakuniy summa alohida ko'rsatiladi. QR kod login talab qilmaydigan, maxfiy tokenli elektron chekni telefonda ochadi.
+- Sessiya bir qurilmada yangilanib turadi va faqat foydalanuvchi chiqish tugmasini bosganda yopiladi.
 - Parollar `scrypt` bilan xeshlanadi. Amaldagi parolni ko'rib bo'lmaydi; techadmin faqat yangi parol o'rnatadi.
 - To'langan yozuv o'chirilmaydi. Kutilayotgan operatsiya bekor qilinsa `cancelled` holatiga o'tadi.
 - SQLite import takroriy yozuvlarni fingerprint orqali o'tkazib yuboradi.
@@ -55,7 +58,7 @@ GitHub'da bo'sh repository yarating, keyin shu papkada:
 ```powershell
 git init
 git add .
-git commit -m "Tarozi Kiosk 2.5 Pro"
+git commit -m "Tarozi Kiosk 2.6 Pro"
 git branch -M main
 git remote add origin https://github.com/USERNAME/REPOSITORY.git
 git push -u origin main
@@ -73,17 +76,28 @@ git push -u origin main
 | Environment variable | Qiymat |
 |---|---|
 | `DATABASE_URL` | Supabase Session pooler URI |
+| `SECRET_KEY` | Kamida 32 belgili o'zgarmaydigan tasodifiy qiymat |
 | `INITIAL_TECHADMIN_PASSWORD` | Kamida 8 belgili kuchli birinchi parol |
 
 Qolgan muhim qiymatlar `render.yaml`da tayyor:
 
 - `INITIAL_TECHADMIN_USERNAME=techadmin`
 - `INITIAL_PRICE=30000`
+- `INITIAL_ENTRY_PRICE=30000`
+- `INITIAL_RELOAD_PRICE=30000`
 - `APP_TIMEZONE=Asia/Tashkent`
 - `COOKIE_SECURE=true`
 - `SUPABASE_DB_LIMIT_BYTES=524288000`
 
 `SUPABASE_DB_LIMIT_BYTES` monitoringdagi “limit/qolgan joy” hisobiga ishlatiladi. Supabase tarifingizdagi real limit boshqacha bo'lsa shu qiymatni baytlarda almashtiring. Haqiqiy ishlatilgan hajm bevosita PostgreSQL `pg_database_size`dan olinadi.
+
+Render servisini qo'lda yaratgan bo'lsangiz, **Settings → Start Command** qiymati aynan quyidagicha bo'lsin:
+
+```text
+gunicorn app:app --workers 1 --threads 4 --timeout 120 --access-logfile -
+```
+
+`SECRET_KEY`ni keyingi deploylarda almashtirmang. Uni almashtirish barcha mavjud login sessiyalarini bir marta bekor qiladi.
 
 Deploy tugagach `/health` manzili `{"status":"ok"}` qaytarishi kerak. Birinchi kirish:
 
@@ -173,9 +187,10 @@ Muvaffaqiyatli yangi backupdan so'ng shu papkadagi oldingi `* holatiga backup.db
 To'lov tasdiqlanganda:
 
 1. Frontend lokal agentni `127.0.0.1:17832`da tekshiradi.
-2. Agent bo'lsa chek RAW ESC/POS formatda dialogsiz yuboriladi va QR hamda kesish komandasi ishlatiladi.
-3. Agent yoki printer mavjud bo'lmasa brauzer 80 mm chek sahifasini ochadi.
-4. Admin qidiruv/tarix bo'limidan to'langan chekni istalgan vaqtda qayta chiqarishi mumkin.
+2. To'liq 80 mm chek ko'rinishi alohida oynada ochiladi.
+3. Agent bo'lsa chek RAW ESC/POS formatda dialogsiz yuboriladi va QR hamda kesish komandasi ishlatiladi.
+4. Agent yoki printer mavjud bo'lmasa shu oynada brauzer chop etish dialogi avtomatik ochiladi.
+5. Admin qidiruv/tarix bo'limidan to'langan chekni istalgan vaqtda qayta chiqarishi mumkin.
 
 Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 

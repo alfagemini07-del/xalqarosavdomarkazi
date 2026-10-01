@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS weighings (
     plate_number TEXT NOT NULL,
     plate_search TEXT NOT NULL,
     price BIGINT NOT NULL CHECK (price >= 0),
+    weight_kg BIGINT NOT NULL DEFAULT 0 CHECK (weight_kg >= 0),
+    weighing_fee BIGINT NOT NULL DEFAULT 0 CHECK (weighing_fee >= 0),
+    entry_fee BIGINT NOT NULL DEFAULT 0 CHECK (entry_fee >= 0),
+    reload_fee BIGINT NOT NULL DEFAULT 0 CHECK (reload_fee >= 0),
+    entry_service BOOLEAN NOT NULL DEFAULT FALSE,
+    reload_service BOOLEAN NOT NULL DEFAULT FALSE,
+    public_token TEXT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'cancelled')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -55,6 +62,17 @@ CREATE TABLE IF NOT EXISTS weighings (
 
 ALTER TABLE weighings ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'cash';
 ALTER TABLE weighings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS weight_kg BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS weighing_fee BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS entry_fee BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS reload_fee BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS entry_service BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS reload_service BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS public_token TEXT;
+
+UPDATE weighings
+SET weighing_fee = price
+WHERE weighing_fee = 0 AND entry_fee = 0 AND reload_fee = 0 AND price > 0;
 
 CREATE INDEX IF NOT EXISTS idx_weighings_created_at ON weighings (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_weighings_updated_at ON weighings (updated_at DESC);
@@ -62,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_weighings_business_date ON weighings (business_da
 CREATE INDEX IF NOT EXISTS idx_weighings_status_date ON weighings (status, business_date DESC);
 CREATE INDEX IF NOT EXISTS idx_weighings_plate_search ON weighings (plate_search);
 CREATE INDEX IF NOT EXISTS idx_weighings_created_by ON weighings (created_by, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_weighings_public_token ON weighings (public_token) WHERE public_token IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS backup_tokens (
     id BIGSERIAL PRIMARY KEY,
