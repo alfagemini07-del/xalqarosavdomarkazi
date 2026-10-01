@@ -1,0 +1,207 @@
+# Tarozi Kiosk 2.4 Pro
+
+AIRITOM LOGISTICS CENTER MCHJ uchun qayta yozilgan tarozi terminali. Web qismi GitHub → Render orqali ishlaydi, doimiy ma'lumotlar Supabase PostgreSQL bazasida saqlanadi. Windows lokal agenti termal printerga dialogsız ESC/POS chek yuboradi va har kuni Supabase ma'lumotlarini kompyuterdagi tanlangan papkaga SQLite `.db` backup qiladi.
+
+## Asosiy imkoniyatlar
+
+- Barcha sahifalardan oldin majburiy login.
+- `operator`, `admin`, `techadmin` rollari.
+- Operator: yangi operatsiya, to'lov usuli, to'lovni tasdiqlash va chek chiqarish.
+- Admin: dashboard, hisobot, qidiruv, tarix, CSV/Excel eksport va eski SQLite import.
+- Techadmin: admin imkoniyatlari, narxni o'zgartirish, foydalanuvchi yaratish/bloklash, parolni reset qilish, qo'lda backup, backup tokenlari va tizim monitoringi.
+- Parollar `scrypt` bilan xeshlanadi. Amaldagi parolni ko'rib bo'lmaydi; techadmin faqat yangi parol o'rnatadi.
+- To'langan yozuv o'chirilmaydi. Kutilayotgan operatsiya bekor qilinsa `cancelled` holatiga o'tadi.
+- SQLite import takroriy yozuvlarni fingerprint orqali o'tkazib yuboradi.
+- Lokal agent bor bo'lsa termal printerga RAW ESC/POS chek yuboriladi; agent bo'lmasa brauzerning 80 mm print oynasi ochiladi.
+- Supabase xotirasi, DB kechikishi, ulanishlar, Render RAM/CPU/uptime, so'rov tezligi va 14 kunlik faollik grafigi.
+
+## Loyiha tuzilishi
+
+```text
+app.py                       Flask server va barcha API
+schema.sql                   Supabase/PostgreSQL sxemasi
+templates/                   HTML sahifalar
+static/                      CSS, JavaScript, rasm va ikonka
+local_agent.py               Windows printer + backup agenti
+install_local_agent.ps1      Windows Task Scheduler o'rnatuvchisi
+render.yaml                  Render Blueprint
+requirements.txt             Python paketlari
+Procfile                     Render/Gunicorn start buyrug'i
+```
+
+Eski distributiv va dizayn manbalari olib tashlangan; import uchun kerak bo'lgan asl baza `.legacy-backup/tarozi.db` sifatida saqlangan. `_internal`, `.legacy-backup`, lokal `.db`, `.env` va agent konfiguratsiyasi `.gitignore` sabab GitHub'ga chiqmaydi.
+
+## 1. Supabase tayyorlash
+
+1. Supabase'da yangi project yarating.
+2. Project ichida **Connect** tugmasini oching.
+3. Render IPv4 tarmog'i uchun **Session pooler** ulanish satrini tanlang (odatda port `5432`).
+4. Parolda `@`, `:`, `/`, `#` kabi belgilar bo'lsa ularni URL-encode qiling.
+5. Ulanish satri oxirida `sslmode=require` bo'lsin.
+
+Misol:
+
+```text
+postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+Jadvallarni qo'lda yaratish shart emas: birinchi server so'rovida `schema.sql` xavfsiz ravishda bajariladi.
+
+## 2. GitHub'ga joylash
+
+GitHub'da bo'sh repository yarating, keyin shu papkada:
+
+```powershell
+git init
+git add .
+git commit -m "Tarozi Kiosk 2.4 Pro"
+git branch -M main
+git remote add origin https://github.com/USERNAME/REPOSITORY.git
+git push -u origin main
+```
+
+`USERNAME/REPOSITORY` o'rniga o'zingizning repository manzilingizni yozing. Pushdan oldin `git status`da `.env`, `*.db`, `.legacy-backup`, `_internal` va `local_agent_config.json` yo'qligini tekshiring.
+
+## 3. Render orqali deploy
+
+1. Render dashboard → **New** → **Blueprint**.
+2. GitHub repository'ni ulang.
+3. Render `render.yaml`ni o'qiydi va web service yaratadi.
+4. Quyidagi maxfiy qiymatlarni kiriting:
+
+| Environment variable | Qiymat |
+|---|---|
+| `DATABASE_URL` | Supabase Session pooler URI |
+| `INITIAL_TECHADMIN_PASSWORD` | Kamida 8 belgili kuchli birinchi parol |
+
+Qolgan muhim qiymatlar `render.yaml`da tayyor:
+
+- `INITIAL_TECHADMIN_USERNAME=techadmin`
+- `INITIAL_PRICE=30000`
+- `APP_TIMEZONE=Asia/Tashkent`
+- `COOKIE_SECURE=true`
+- `SUPABASE_DB_LIMIT_BYTES=524288000`
+
+`SUPABASE_DB_LIMIT_BYTES` monitoringdagi “limit/qolgan joy” hisobiga ishlatiladi. Supabase tarifingizdagi real limit boshqacha bo'lsa shu qiymatni baytlarda almashtiring. Haqiqiy ishlatilgan hajm bevosita PostgreSQL `pg_database_size`dan olinadi.
+
+Deploy tugagach `/health` manzili `{"status":"ok"}` qaytarishi kerak. Birinchi kirish:
+
+```text
+Login: techadmin
+Parol: Render'da INITIAL_TECHADMIN_PASSWORD uchun bergan qiymat
+```
+
+## 4. Eski `tarozi.db`ni import qilish
+
+1. Techadmin yoki admin bilan kiring.
+2. **Import va Backup** bo'limini oching.
+3. `.db`, `.sqlite` yoki `.sqlite3` faylni tanlang.
+4. **Importni boshlash** tugmasini bosing.
+
+Import quyidagilarni qiladi:
+
+- `weighings` jadvalini tekshiradi;
+- faylni faqat o'qish rejimida ochadi;
+- sanalar, avtomobil raqami, tarif va holatni ko'chiradi;
+- eski admin/login parollarini ko'chirmaydi;
+- katta faylni 1000 qatorli bo'laklarda yozadi;
+- qayta import qilinganda takroriy yozuvlarni tashlab ketadi.
+
+Maksimal upload hajmi 256 MB.
+
+## 5. Qo'lda backup
+
+Techadmin → **Import va Backup** → **Zaxira Nusxa (.db)**.
+
+Server ayni paytdagi foydalanuvchilar (faqat xavfsiz xeshlar), sozlamalar va barcha operatsiyalarni portable SQLite faylga yozib yuklatadi.
+
+Windows fayl nomida `:` belgisi mumkin emas. Shu sabab fayl nomi quyidagicha bo'ladi:
+
+```text
+01.10.2026 00-00 holatiga backup.db
+```
+
+## 6. Windows lokal agentini o'rnatish
+
+Bu qism sayt ochiladigan va termal printer ulangan kompyuterda bir marta bajariladi.
+
+Talablar:
+
+- Windows 10/11;
+- Python o'rnatilgan va `python` PATH'da;
+- printer Windows'da o'rnatilgan; imkon qadar default printer qiling;
+- agent fayllari doimiy papkada turishi kerak.
+
+Techadmin → **Sozlamalar** → **Lokal backup agenti tokenlari** ichida token yarating va darhol nusxalang. Token keyin qayta ko'rsatilmaydi.
+
+PowerShell'ni oching:
+
+```powershell
+pip install "pywin32>=311"
+powershell -ExecutionPolicy Bypass -File .\install_local_agent.ps1
+```
+
+O'rnatuvchi quyidagilarni so'raydi:
+
+- Render sayt URL'i, masalan `https://tarozi-kiosk.onrender.com`;
+- ruxsat etilgan brauzer origin — odatda sayt URL'ining aynan o'zi;
+- techadmin yaratgan backup token;
+- backup saqlanadigan lokal papka;
+- printer nomi (bo'sh qoldirilsa Windows default printer).
+
+U ikki vazifa yaratadi:
+
+- `TaroziKiosk Local Print Agent` — Windows'ga kirishda ishga tushadi;
+- `TaroziKiosk Daily Backup` — har kuni 00:05 da ishlaydi, kompyuter o'chiq bo'lsa keyingi mavjud vaqtda ishga tushadi.
+
+Qo'lda tekshirish:
+
+```powershell
+python local_agent.py test-print
+python local_agent.py backup
+```
+
+## 7. Avtomatik backup qanday ishlaydi
+
+Agent vaqtinchalik `.part` faylga yuklaydi, SQLite sarlavhasi va `PRAGMA quick_check`ni tekshiradi, keyin atomik almashtiradi. Yangi backup to'liq va sog'lom bo'lmasa oldingi fayl o'chirilmaydi.
+
+Muvaffaqiyatli yangi backupdan so'ng shu papkadagi oldingi `* holatiga backup.db` o'chiriladi. Natijada papkada faqat eng yangi backup qoladi.
+
+## 8. Chek chiqarish
+
+To'lov tasdiqlanganda:
+
+1. Frontend lokal agentni `127.0.0.1:17832`da tekshiradi.
+2. Agent bo'lsa chek RAW ESC/POS formatda dialogsiz yuboriladi va QR hamda kesish komandasi ishlatiladi.
+3. Agent yoki printer mavjud bo'lmasa brauzer 80 mm chek sahifasini ochadi.
+4. Admin qidiruv/tarix bo'limidan to'langan chekni istalgan vaqtda qayta chiqarishi mumkin.
+
+Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
+
+## Rollar
+
+| Funksiya | Operator | Admin | Techadmin |
+|---|:---:|:---:|:---:|
+| Kiosk va chek | ✓ | ✓ | ✓ |
+| Dashboard/hisobot/qidiruv | — | ✓ | ✓ |
+| SQLite import | — | ✓ | ✓ |
+| Qo'lda to'liq backup | — | — | ✓ |
+| Narxni o'zgartirish | — | — | ✓ |
+| Login/parol/rollarni boshqarish | — | — | ✓ |
+| Supabase/Render monitoring | — | — | ✓ |
+| Backup tokenlari | — | — | ✓ |
+
+## Muhim eslatmalar
+
+- Render web serveri foydalanuvchining Windows papkasiga bevosita yozolmaydi. Shu sabab avtomatik lokal backup va dialogsız printer uchun `local_agent.py` zarur.
+- Render'ning vaqtinchalik diski permanent ma'lumot saqlash uchun ishlatilmaydi; asosiy ma'lumot Supabase'da.
+- Render Free service bo'sh turganda uxlab qolishi mumkin; birinchi so'rov sekinroq ochilishi ehtimoli bor.
+- `SECRET_KEY`, `DATABASE_URL`, boshlang'ich parol va backup tokenini GitHub'ga yozmang.
+- `local_agent_config.json` maxfiy token saqlaydi va `.gitignore`ga kiritilgan.
+- Techadmin monitoringi Gunicorn worker telemetriyasini ko'rsatadi; bir nechta worker bo'lsa so'rov soni aynan javob bergan worker bo'yicha bo'lishi mumkin.
+
+## Loglar
+
+- Render: service → **Logs**.
+- Windows agent: loyiha yonidagi `local_agent.log`.
+- Import xatosida Render logida traceback bo'ladi, foydalanuvchiga esa xavfsiz qisqa xabar ko'rsatiladi.
