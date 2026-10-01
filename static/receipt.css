@@ -1,6 +1,7 @@
-@page { size: 80mm auto; margin: 0; }
+@page { size: 80mm 210mm; margin: 0; }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 16px; color: #111; background: #eef2f7; font-family: "Courier New", monospace; }
+body[data-embedded="1"] { padding: 10px 0; background: #dfe5ec; }
 .receipt { width: 80mm; max-width: 100%; margin: 0 auto; padding: 8mm 5mm; background: #fff; font-size: 13px; line-height: 1.45; }
 header, footer { text-align: center; }
 header h1 { margin: 0 0 4px; font-size: 19px; }
@@ -18,7 +19,7 @@ footer { font-size: 12px; }
 .print-actions button { flex: 1; padding: 11px; border: 0; border-radius: 8px; color: white; background: #2563eb; cursor: pointer; font-weight: bold; }
 .print-actions button:last-child { background: #64748b; }
 @media print {
-  body { padding: 0; background: #fff; }
-  .receipt { width: 80mm; }
+  html, body { width: 80mm; margin: 0; padding: 0; background: #fff; }
+  .receipt { width: 80mm; max-width: none; margin: 0; break-inside: avoid; }
   .print-actions { display: none; }
 }

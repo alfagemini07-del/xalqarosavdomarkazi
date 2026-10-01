@@ -11,6 +11,10 @@
   const weightInput = document.getElementById("weight-input");
   const entryService = document.getElementById("service-entry");
   const reloadService = document.getElementById("service-reload");
+  const entryFeeInput = document.getElementById("entry-fee-input");
+  const reloadFeeInput = document.getElementById("reload-fee-input");
+  const receiptPreviewModal = document.getElementById("receipt-preview-modal");
+  const receiptPreviewFrame = document.getElementById("receipt-preview-frame");
   let current = null;
   let paymentMethod = "cash";
   let servicePrices = { weighing: 30000, entry: 30000, reload: 30000 };
@@ -21,6 +25,8 @@
   let journalPage = 1;
   let journalPages = 1;
   let journalRequestId = 0;
+  let receiptPrintPending = false;
+  let localAgentReady = false;
   const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/\u00a0/g, " ");
 
   async function api(url, options = {}) {
@@ -98,10 +104,12 @@
       const response = await fetch("http://127.0.0.1:17832/health", { signal: controller.signal, cache: "no-store" });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.message || "Printer tayyor emas");
+      localAgentReady = true;
       status.classList.remove("offline");
       status.querySelector("b").textContent = data.printer || "Tayyor";
       document.getElementById("printer-name").textContent = data.printer || "Termal printer";
     } catch (_error) {
+      localAgentReady = false;
       status.classList.add("offline");
       status.querySelector("b").textContent = "Brauzer rejimi";
       document.getElementById("printer-name").textContent = "Brauzer orqali chop etish";
@@ -221,19 +229,37 @@
   }
 
   function updatePayAvailability() {
-    payButton.disabled = !(paidCheck.checked && validWeight(false));
+    payButton.disabled = !(
+      paidCheck.checked && validWeight(false) &&
+      validServiceAmount(entryService, entryFeeInput, "entry-fee-error", false) &&
+      validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", false)
+    );
+  }
+
+  function validServiceAmount(checkbox, input, errorId, showError = false) {
+    const value = Number(input.value);
+    const valid = !checkbox.checked || (Number.isInteger(value) && value >= 1 && value <= 1000000000);
+    const error = document.getElementById(errorId);
+    error.classList.toggle("error", showError && !valid);
+    error.textContent = showError && !valid ? "To'lovni 1–1 000 000 000 so'm oralig'ida kiriting" : "1 dan 1 000 000 000 so'mgacha";
+    return valid;
+  }
+
+  function toggleServiceEditor(checkbox, panelId, input, errorId) {
+    document.getElementById(panelId).classList.toggle("hidden", !checkbox.checked);
+    validServiceAmount(checkbox, input, errorId, false);
+    renderPricing();
+    if (checkbox.checked) setTimeout(() => input.focus(), 60);
   }
 
   function renderPricing() {
     if (!current) return;
     const base = Number(current.weighing_fee ?? current.price ?? servicePrices.weighing);
-    const entry = entryService.checked ? Number(servicePrices.entry) : 0;
-    const reload = reloadService.checked ? Number(servicePrices.reload) : 0;
+    const entry = entryService.checked ? Math.max(0, Number(entryFeeInput.value) || 0) : 0;
+    const reload = reloadService.checked ? Math.max(0, Number(reloadFeeInput.value) || 0) : 0;
     const total = base + entry + reload;
     const weight = Math.max(0, Number(weightInput.value) || 0);
     document.getElementById("payment-price").textContent = fmt(base);
-    document.getElementById("entry-service-price").textContent = fmt(servicePrices.entry);
-    document.getElementById("reload-service-price").textContent = fmt(servicePrices.reload);
     document.getElementById("grand-total-value").textContent = fmt(total);
     document.getElementById("preview-weight").textContent = fmt(weight);
     document.getElementById("preview-weighing-fee").textContent = `${fmt(base)} so'm`;
@@ -257,8 +283,12 @@
     document.getElementById("receipt-status").textContent = "KUTILMOQDA";
     paidCheck.checked = false;
     weightInput.value = "";
+    entryFeeInput.value = "";
+    reloadFeeInput.value = "";
     entryService.checked = false;
     reloadService.checked = false;
+    document.getElementById("entry-fee-panel").classList.add("hidden");
+    document.getElementById("reload-fee-panel").classList.add("hidden");
     payButton.disabled = true;
     paymentMethod = "cash";
     document.querySelectorAll(".payment-method").forEach(button => button.classList.toggle("selected", button.dataset.method === "cash"));
@@ -313,16 +343,45 @@
     } finally { clearTimeout(timer); }
   }
 
+  function printReceiptPreview() {
+    try {
+      receiptPreviewFrame.contentWindow.focus();
+      receiptPreviewFrame.contentWindow.print();
+    } catch (_error) {
+      showToast("Chop etish oynasi ochilmadi. Chekni yangi oynada ochib ko'ring.", true);
+    }
+  }
+
+  function requestBrowserPrint() {
+    if (receiptPreviewFrame.classList.contains("loading")) receiptPrintPending = true;
+    else setTimeout(printReceiptPreview, 120);
+  }
+
+  function openReceiptPreview(weighingId, autoPrint = true) {
+    receiptPrintPending = autoPrint;
+    document.getElementById("receipt-frame-loading").classList.remove("hidden");
+    receiptPreviewFrame.classList.add("loading");
+    receiptPreviewModal.classList.remove("hidden");
+    receiptPreviewFrame.src = `/receipt/${weighingId}?embedded=1`;
+  }
+
+  function closeReceiptPreview() {
+    receiptPrintPending = false;
+    receiptPreviewModal.classList.add("hidden");
+    receiptPreviewFrame.src = "about:blank";
+  }
+
   async function confirmAndPrint() {
     if (!current || !paidCheck.checked) return;
     if (!validWeight(true)) { weightInput.focus(); updatePayAvailability(); return; }
-    const fallback = window.open("about:blank", "tarozi-receipt", "width=520,height=800");
+    if (!validServiceAmount(entryService, entryFeeInput, "entry-fee-error", true)) { entryFeeInput.focus(); updatePayAvailability(); return; }
+    if (!validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", true)) { reloadFeeInput.focus(); updatePayAvailability(); return; }
     payButton.disabled = true;
     const original = payButton.textContent;
     payButton.textContent = "To'lov saqlanmoqda...";
     try {
       const weighingId = current.id;
-      const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, reload_service: reloadService.checked }) });
+      const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, entry_fee: entryService.checked ? Number(entryFeeInput.value) : 0, reload_service: reloadService.checked, reload_fee: reloadService.checked ? Number(reloadFeeInput.value) : 0 }) });
       document.getElementById("payment-status-badge").textContent = "To'langan";
       document.getElementById("payment-status-badge").className = "badge paid";
       document.getElementById("receipt-status").textContent = "TO'LANGAN";
@@ -332,20 +391,21 @@
       document.getElementById("preview-reload-fee").textContent = `${data.receipt.reload_fee_fmt} so'm`;
       document.getElementById("preview-price").textContent = `${data.receipt.total_fmt} so'm`;
       document.getElementById("grand-total-value").textContent = data.receipt.total_fmt;
-      if (fallback) fallback.location.href = `/receipt/${weighingId}`;
-      payButton.textContent = "Chek chop etilmoqda...";
-      try {
-        const printed = await localPrint(data.receipt);
-        showToast(`Chek ${printed.printer || "printer"}ga yuborildi`);
-      } catch (_agentError) {
-        if (fallback) fallback.location.href = `/receipt/${weighingId}?autoprint=1`;
-        else window.location.href = `/receipt/${weighingId}?autoprint=1`;
-        showToast("Lokal agent topilmadi — brauzer chop etish oynasi ochildi");
-      }
+      payButton.textContent = "Chek tayyorlanmoqda...";
+      openReceiptPreview(weighingId, !localAgentReady);
+      if (localAgentReady) {
+        try {
+          const printed = await localPrint(data.receipt);
+          showToast(`Chek ${printed.printer || "printer"}ga yuborildi. Nusxa ekranda ochiq.`);
+        } catch (printError) {
+          localAgentReady = false;
+          requestBrowserPrint();
+          showToast(`Printer agenti ishlamadi: ${printError.message}. Brauzer chop oynasi ochiladi.`, true);
+        }
+      } else showToast("Chek tayyor — chop etish oynasi ochiladi");
       current = null;
-      setTimeout(() => { showScreen(mainScreen); loadStats(); }, 900);
+      showScreen(mainScreen); loadStats();
     } catch (error) {
-      if (fallback) fallback.close();
       showToast(error.message, true);
       payButton.disabled = false;
     } finally {
@@ -375,6 +435,14 @@
   document.getElementById("operator-journal-prev").addEventListener("click", () => { if (journalPage > 1) { journalPage -= 1; loadOperatorJournal(); } });
   document.getElementById("operator-journal-next").addEventListener("click", () => { if (journalPage < journalPages) { journalPage += 1; loadOperatorJournal(); } });
   document.getElementById("operator-backup").addEventListener("click", saveOperatorBackup);
+  receiptPreviewFrame.addEventListener("load", () => {
+    if (!receiptPreviewFrame.src.includes("/receipt/")) return;
+    document.getElementById("receipt-frame-loading").classList.add("hidden"); receiptPreviewFrame.classList.remove("loading");
+    if (receiptPrintPending) { receiptPrintPending = false; setTimeout(printReceiptPreview, 500); }
+  });
+  document.getElementById("receipt-preview-print").addEventListener("click", requestBrowserPrint);
+  document.getElementById("receipt-preview-close").addEventListener("click", closeReceiptPreview);
+  document.getElementById("receipt-preview-finish").addEventListener("click", closeReceiptPreview);
   document.querySelectorAll("[data-close='plate-modal']").forEach(button => button.addEventListener("click", closePlateModal));
   document.getElementById("plate-clear").addEventListener("click", () => { plateInput.value = ""; validatePlate(); plateInput.focus(); });
   plateInput.addEventListener("input", validatePlate);
@@ -386,14 +454,16 @@
     document.getElementById("receipt-payment-type").textContent = { cash: "NAQD PUL", card: "UZCARD / HUMO", bank: "HISOB RAQAM" }[paymentMethod];
   }));
   weightInput.addEventListener("input", () => { if (weightInput.value.length > 7) weightInput.value = weightInput.value.slice(0, 7); validWeight(false); renderPricing(); });
-  entryService.addEventListener("change", renderPricing);
-  reloadService.addEventListener("change", renderPricing);
+  entryFeeInput.addEventListener("input", () => { if (entryFeeInput.value.length > 10) entryFeeInput.value = entryFeeInput.value.slice(0, 10); validServiceAmount(entryService, entryFeeInput, "entry-fee-error", false); renderPricing(); });
+  reloadFeeInput.addEventListener("input", () => { if (reloadFeeInput.value.length > 10) reloadFeeInput.value = reloadFeeInput.value.slice(0, 10); validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", false); renderPricing(); });
+  entryService.addEventListener("change", () => toggleServiceEditor(entryService, "entry-fee-panel", entryFeeInput, "entry-fee-error"));
+  reloadService.addEventListener("change", () => toggleServiceEditor(reloadService, "reload-fee-panel", reloadFeeInput, "reload-fee-error"));
   paidCheck.addEventListener("change", updatePayAvailability);
   document.getElementById("btn-cancel").addEventListener("click", cancelCurrent);
   document.getElementById("btn-back-payment").addEventListener("click", cancelCurrent);
   payButton.addEventListener("click", confirmAndPrint);
   document.getElementById("btn-test-feed").addEventListener("click", feedPaper);
-  document.addEventListener("keydown", event => { if (event.key !== "Escape") return; if (!plateModal.classList.contains("hidden")) closePlateModal(); else document.getElementById("operator-journal-modal").classList.add("hidden"); });
+  document.addEventListener("keydown", event => { if (event.key !== "Escape") return; if (!receiptPreviewModal.classList.contains("hidden")) closeReceiptPreview(); else if (!plateModal.classList.contains("hidden")) closePlateModal(); else document.getElementById("operator-journal-modal").classList.add("hidden"); });
 
   setClock(); setInterval(setClock, 1000);
   loadStats(); pollSync(); setInterval(pollSync, 12000);
