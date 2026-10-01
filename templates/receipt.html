@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chek {{ receipt.receipt_no }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='receipt.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='receipt.css', v='20261001-3') }}">
 </head>
 <body data-auto-print="{{ '1' if auto_print else '0' }}" data-embedded="{{ '1' if embedded else '0' }}">
   <main class="receipt">
@@ -28,6 +28,6 @@
     <footer><p>QR kodda mashina, vazn, vaqt va to'lov ma'lumotlari yozilgan.</p><p>Xizmatdan foydalanganingiz uchun rahmat!</p></footer>
   </main>
   {% if not embedded %}<div class="print-actions"><button id="btn-browser-print" type="button">Chop etish</button>{% if not public_view %}<button id="btn-close-print" type="button">Yopish</button>{% endif %}</div>{% endif %}
-  <script src="{{ url_for('static', filename='receipt.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='receipt.js', v='20261001-3') }}" defer></script>
 </body>
 </html>
