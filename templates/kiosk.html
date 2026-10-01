@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tarozi terminali | {{ company }}</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="kiosk-page" data-csrf="{{ csrf_token() }}" data-role="{{ user.role }}">
+  <div class="industrial-grid"></div>
+  <header class="terminal-header">
+    <div class="terminal-brand"><span class="brand-symbol">⚖</span><div><strong>TAROZI TERMINALI</strong><small>{{ company }}</small></div><span class="terminal-id">TERMINAL #01</span></div>
+    <div class="terminal-statuses"><span class="status-chip" id="scale-status"><i></i>Tarozi: <b>Online</b></span><span class="status-chip blue" id="printer-status"><i></i>Printer: <b>Tekshirilmoqda</b></span></div>
+    <div class="terminal-actions">
+      <div class="digital-clock"><strong id="clock">--:--:--</strong><small id="clock-date">—</small></div>
+      {% if user.role in ('admin', 'techadmin') %}<a class="button secondary compact" href="{{ url_for('admin_page') }}">⌾ Admin kirish</a>{% endif %}
+      <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="icon-button" type="submit" title="Chiqish">↪</button></form>
+    </div>
+  </header>
+
+  <main id="screen-main" class="kiosk-screen active">
+    <section class="kiosk-hero"><span class="eyebrow-pill"><i></i> AVTOMATLASHTIRILGAN KIOSK TIZIMI</span><h1>Avtomobil Tortish <em>Tizimi</em></h1><p>Rasmga bosib mashina raqamini kiriting yoki tortishni boshlang</p></section>
+    <button id="btn-start" class="weighbridge-stage" type="button">
+      <img src="{{ url_for('static', filename='truck.jpg') }}" alt="Tarozidagi yuk avtomobili"><span class="stage-shade"></span>
+      <span class="weight-console"><span class="console-label">TAROZI INDIKATORI <b><i></i> BARQAROR</b></span><strong id="live-weight">0 <small>KG</small></strong><span class="weight-splits"><b>Brutto: <em>—</em></b><b>Tara: <em>—</em></b><b>Netto: <em>—</em></b></span></span>
+      <span class="barrier-chip">⌘ Shlagbaum: <b>NAZORATDA</b></span><span class="start-weighing">▣ <b>Mashina Raqamini Kiritish (Bosing)</b> →</span><span class="stage-hint"><i></i> Tortishni boshlash uchun ekranga yoki yuk mashinasiga bosing</span>
+    </button>
+    <section class="kiosk-stats">
+      <article><span class="metric-icon green">①</span><div><small>Bugun o'lchandi</small><strong><b id="today-count">—</b> ta avtomobil</strong></div><em>Jonli</em></article>
+      <article><span class="metric-icon blue">▤</span><div><small>Bugungi tushum</small><strong><b id="today-revenue">—</b> so'm</strong></div><em id="current-price-chip">Narx: —</em></article>
+      <article><span class="metric-icon violet">⌛</span><div><small>Operator</small><strong>{{ user.username }}</strong></div><em>{{ user.role }}</em></article>
+    </section>
+  </main>
+
+  <main id="screen-payment" class="kiosk-screen hidden payment-workspace">
+    <section class="payment-titlebar"><button id="btn-back-payment" class="square-back" type="button">←</button><div><span class="eyebrow">BOSQICH 03 / 03 <i></i> YAKUNIY HISOB-KITOB</span><h1>To'lov va Tortish Ma'lumotlari</h1></div><div class="transaction-chip">Doimiy tranzaksiya raqami: <strong id="payment-receipt-top">—</strong></div></section>
+    <div class="payment-columns">
+      <section class="payment-card industrial-card">
+        <div class="vehicle-summary"><div><small>Avtotransport davlat raqami</small><strong class="plate-display"><i>UZ</i><span id="payment-plate">—</span></strong></div><div class="align-right"><small>Transport turi</small><strong class="vehicle-type">▣ Yuk avtomobili</strong></div></div><hr>
+        <div class="section-heading"><h2>▥ Vazn Ko'rsatkichlari</h2><span class="mini-state"><i></i>Aniqlik: ±5 kg</span></div>
+        <div class="weight-cards"><article class="active"><small>BRUTTO</small><strong>— <i>KG</i></strong><span>Uskunadan olinadi</span></article><article><small>TARA</small><strong>— <i>KG</i></strong><span>Bazada mavjud emas</span></article><article><small>NETTO</small><strong>— <i>KG</i></strong><span>Brutto − Tara</span></article></div><hr>
+        <div class="tariff-row"><div><small>▣ AVTOMOBILNI TAROZIDA O'LCHASH NARXI:</small><strong><span id="payment-price">—</span> <i>so'm</i></strong><p>Standart davlat tarifi</p></div><dl><div><dt>Holat:</dt><dd><span id="payment-status-badge" class="badge pending">Kutilmoqda</span></dd></div><div><dt>Sana va vaqt:</dt><dd id="payment-time">—</dd></div><div><dt>Mas'ul operator:</dt><dd>{{ user.username }}</dd></div></dl></div><hr>
+        <h3>To'lov Usulini Tanlang</h3>
+        <div class="payment-methods"><button class="payment-method selected" data-method="cash" type="button"><b>▣</b><strong>Naqd pul</strong><small>Kassaga topshirish</small></button><button class="payment-method" data-method="card" type="button"><b>▤</b><strong>Uzcard / Humo</strong><small>POS terminal</small></button><button class="payment-method" data-method="bank" type="button"><b>▥</b><strong>Hisob raqam</strong><small>Shartnoma asosida</small></button></div>
+        <label class="confirm-payment"><input id="paid-check" type="checkbox"><span class="visual-check">✓</span><span><strong>To'lov to'liq qabul qilindi</strong><small>Chekni chop etishga ruxsat berish</small></span><em>Majburiy</em></label>
+        <div class="payment-footer-actions"><button id="btn-cancel" class="button danger-soft" type="button">⊗ Bekor qilish</button><button id="btn-pay" class="button success" type="button" disabled>▤ To'lov Qilindi &amp; Chek Chop Etish</button></div>
+      </section>
+      <aside class="receipt-side industrial-card">
+        <div class="section-heading"><h2>▤ 80mm Chek Ko'rinishi</h2><span>ESC/POS</span></div>
+        <div class="receipt-paper"><div class="receipt-logo">⚖</div><h3>{{ company }}</h3><p>Surxondaryo vil., Termiz tumani</p><hr><dl><div><dt>Chek raqami:</dt><dd id="preview-receipt">—</dd></div><div><dt>Sana / Vaqt:</dt><dd id="preview-time">—</dd></div><div><dt>Operator:</dt><dd>{{ user.username }}</dd></div></dl><hr><div class="receipt-highlight"><span>Mashina:</span><b id="preview-plate">—</b></div><dl><div><dt>Xizmat:</dt><dd>Og'irlik o'lchash</dd></div><div><dt>JAMI SUMMA:</dt><dd id="preview-price">—</dd></div><div><dt>To'lov turi:</dt><dd id="receipt-payment-type">NAQD PUL</dd></div><div><dt>Holat:</dt><dd id="receipt-status">KUTILMOQDA</dd></div></dl><hr><div class="receipt-qr">▦</div><p>XARIDINGIZ UCHUN RAHMAT!</p></div>
+        <div class="printer-line"><span><i></i><b id="printer-name">Termal printer</b></span><button id="btn-test-feed" type="button">⟳ Qog'ozni surish</button></div>
+      </aside>
+    </div>
+  </main>
+
+  <div id="plate-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="plate-title"><div class="modal-card plate-modal-card"><div class="modal-accent"></div><header><span class="modal-icon">▣</span><div><h2 id="plate-title">Avtomobil Davlat Raqamini Kiritish</h2><p>Klaviatura yoki sensorli ekran orqali kiriting</p></div><button class="modal-close" type="button" data-close="plate-modal">×</button></header><div class="modal-body"><div class="plate-label"><span>▧ Davlat Ro'yxatdan O'tish Belgisi</span><em id="plate-validation"><i></i> To'g'ri formatni kiriting</em></div><div class="plate-input-wrap"><span class="uz-badge">▰<b>UZ</b></span><input id="plate-input" type="text" maxlength="20" placeholder="01 A 777 BA" autocomplete="off"><button id="plate-clear" type="button">⌫</button></div><div id="plate-error" class="field-error hidden"></div><div class="recent-line"><span>↶ Oxirgi faol transportlar:</span><small>Tezkor tanlash</small></div><div id="recent-plates" class="recent-plates"><button type="button" disabled>Yuklanmoqda...</button></div></div><footer><button class="button secondary" type="button" data-close="plate-modal">← Orqaga</button><button id="btn-submit-plate" class="button success grow" type="button">Davom Etish (Vazn &amp; To'lov) →</button></footer></div></div>
+
+  <div id="toast" class="toast hidden" role="status"><b id="toast-icon">✓</b><span id="toast-text"></span></div>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

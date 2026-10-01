@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chek {{ receipt.receipt_no }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='receipt.css') }}">
+</head>
+<body data-auto-print="{{ '1' if auto_print else '0' }}">
+  <main class="receipt">
+    <header><h1>TAROZI NAZORAT</h1><strong>{{ receipt.company }}</strong><span>Avtomobil o'lchash cheki</span></header>
+    <hr>
+    <dl>
+      <div><dt>Sana</dt><dd>{{ receipt.created_at }}</dd></div>
+      <div><dt>Chek raqami</dt><dd>{{ receipt.receipt_no }}</dd></div>
+    </dl>
+    <hr>
+    <div class="major"><span>Avtomobil</span><strong>{{ receipt.plate_number }}</strong></div>
+    <hr>
+    <div class="major"><span>To'lov</span><strong>{{ receipt.price_fmt }} so'm</strong></div>
+    <div class="row"><span>To'lov turi</span><strong>{{ {'cash': 'Naqd pul', 'card': 'Uzcard / Humo', 'bank': 'Hisob raqam'}.get(receipt.payment_method, 'Naqd pul') }}</strong></div>
+    <div class="row"><span>Holat</span><strong>To'landi</strong></div>
+    <img class="qr" src="data:image/png;base64,{{ receipt.qr_b64 }}" alt="Chek QR kodi">
+    <footer><p>Xizmatdan foydalanganingiz uchun rahmat!</p></footer>
+  </main>
+  <div class="print-actions"><button id="btn-browser-print" type="button">Chop etish</button><button id="btn-close-print" type="button">Yopish</button></div>
+  <script src="{{ url_for('static', filename='receipt.js') }}" defer></script>
+</body>
+</html>
