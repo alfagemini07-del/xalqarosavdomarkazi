@@ -412,9 +412,32 @@ def make_qr_base64(text: str) -> str:
 
 def receipt_payload(row: dict) -> dict:
     data = serialize_weighing(row)
-    qr_text = data["public_url"] or (
-        f"{COMPANY_NAME}\nChek: {data['receipt_no']}\nJami: {data['total_fmt']} so'm"
+    payment_label = {
+        "cash": "Naqd pul",
+        "card": "Uzcard / Humo",
+        "bank": "Hisob raqam",
+    }.get(data["payment_method"], "Naqd pul")
+    qr_lines = [
+        "TAROZI CHEKI",
+        COMPANY_NAME,
+        f"Chek: {data['receipt_no']}",
+        f"Avtomobil: {data['plate_number']}",
+        f"Vazni: {data['weight_fmt']} kg",
+        f"Vaqti: {data['created_at']}",
+        f"Vazn o'lchash: {data['weighing_fee_fmt']} so'm",
+    ]
+    if data["entry_service"]:
+        qr_lines.append(f"Hududga kirish: {data['entry_fee_fmt']} so'm")
+    if data["reload_service"]:
+        qr_lines.append(f"Qayta yuklash: {data['reload_fee_fmt']} so'm")
+    qr_lines.extend(
+        (
+            f"Jami: {data['total_fmt']} so'm",
+            f"To'lov turi: {payment_label}",
+            "Holat: To'langan",
+        )
     )
+    qr_text = "\n".join(qr_lines)
     data.update(company=COMPANY_NAME, qr_text=qr_text)
     return data
 
