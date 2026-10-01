@@ -17,6 +17,10 @@
   let statsLoading = false;
   let lastSyncVersion = null;
   let syncLoading = false;
+  let journalDay = "today";
+  let journalPage = 1;
+  let journalPages = 1;
+  let journalRequestId = 0;
   const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/\u00a0/g, " ");
 
   async function api(url, options = {}) {
@@ -122,6 +126,69 @@
     } catch (_error) {
       wrap.textContent = "Oxirgi raqamlarni olib bo'lmadi";
     }
+  }
+
+  function journalCell(text, className = "") {
+    const cell = document.createElement("td"); cell.textContent = text ?? "—"; if (className) cell.className = className; return cell;
+  }
+
+  function journalStatus(status) {
+    const span = document.createElement("span"); span.className = `badge ${status}`;
+    span.textContent = status === "paid" ? "To'langan" : status === "pending" ? "Kutilmoqda" : "Bekor qilingan";
+    return span;
+  }
+
+  async function loadOperatorJournal() {
+    const requestId = ++journalRequestId;
+    const body = document.getElementById("operator-journal-body");
+    const loadingRow = document.createElement("tr"); const loadingCell = journalCell("Yuklanmoqda...", "table-empty"); loadingCell.colSpan = 7; loadingRow.append(loadingCell); body.replaceChildren(loadingRow);
+    try {
+      const params = new URLSearchParams({ day: journalDay, page: journalPage, per_page: document.getElementById("operator-journal-size").value });
+      const query = document.getElementById("operator-journal-search").value.trim(); const status = document.getElementById("operator-journal-status").value;
+      if (query) params.set("q", query); if (status) params.set("status", status);
+      const data = await api(`/api/operator/weighings?${params}`); if (requestId !== journalRequestId) return; journalPages = data.total_pages; body.replaceChildren();
+      if (!data.results.length) { const row = document.createElement("tr"); const cell = journalCell("Bu kunda ma'lumot topilmadi", "table-empty"); cell.colSpan = 7; row.append(cell); body.append(row); }
+      data.results.forEach(item => {
+        const row = document.createElement("tr"); row.append(journalCell(item.receipt_no), journalCell(item.plate_number), journalCell(`${item.weight_fmt} kg`), journalCell(`${item.total_fmt} so'm`), journalCell(item.time));
+        const state = document.createElement("td"); state.append(journalStatus(item.status)); row.append(state);
+        const action = document.createElement("td");
+        if (item.status === "paid") { const link = document.createElement("a"); link.className = "button secondary journal-receipt-link"; link.href = `/receipt/${item.id}`; link.target = "_blank"; link.rel = "noopener"; link.textContent = "Chekni ko'rish"; action.append(link); } else action.textContent = "—";
+        row.append(action); body.append(row);
+      });
+      document.getElementById("operator-journal-date").textContent = `${data.date_label} kungi operatsiyalar`;
+      document.getElementById("operator-journal-total").textContent = `${data.total} ta yozuv`;
+      document.getElementById("operator-journal-page").textContent = `${data.page} / ${data.total_pages}`;
+      document.getElementById("operator-journal-prev").disabled = data.page <= 1;
+      document.getElementById("operator-journal-next").disabled = data.page >= data.total_pages;
+    } catch (error) {
+      if (requestId !== journalRequestId) return;
+      const row = document.createElement("tr"); const cell = journalCell(error.message, "table-empty"); cell.colSpan = 7; row.append(cell); body.replaceChildren(row);
+    }
+  }
+
+  function openOperatorJournal() {
+    journalDay = "today"; journalPage = 1;
+    document.querySelectorAll("[data-journal-day]").forEach(button => button.classList.toggle("active", button.dataset.journalDay === journalDay));
+    document.getElementById("operator-journal-modal").classList.remove("hidden"); loadOperatorJournal();
+  }
+
+  async function saveOperatorBackup() {
+    const button = document.getElementById("operator-backup"); const original = button.innerHTML; button.disabled = true;
+    try {
+      let directory = null;
+      if ("showDirectoryPicker" in window) directory = await window.showDirectoryPicker({ mode: "readwrite" });
+      button.textContent = "Backup tayyorlanmoqda...";
+      const response = await fetch("/api/backup/download", { credentials: "same-origin", cache: "no-store" });
+      if (response.status === 401) { window.location.href = "/login"; return; }
+      if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.message || "Backup olinmadi"); }
+      const blob = await response.blob(); const now = new Date(); const date = now.toLocaleDateString("uz-UZ").replace(/\//g, "."); const filename = `${date} 00-00 holatiga backup.db`;
+      if (directory) {
+        const file = await directory.getFileHandle(filename, { create: true }); const writable = await file.createWritable(); await writable.write(blob); await writable.close(); showToast(`Backup tanlangan papkaga saqlandi: ${filename}`);
+      } else {
+        const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); showToast("Brauzer papka tanlashni qo'llamaydi — backup Downloads papkasiga saqlandi");
+      }
+    } catch (error) { if (error.name !== "AbortError") showToast(error.message, true); }
+    finally { button.disabled = false; button.innerHTML = original; }
   }
 
   function validatePlate() {
@@ -298,6 +365,16 @@
   }
 
   document.getElementById("btn-start").addEventListener("click", openPlateModal);
+  document.getElementById("operator-journal-open").addEventListener("click", openOperatorJournal);
+  document.getElementById("operator-journal-close").addEventListener("click", () => document.getElementById("operator-journal-modal").classList.add("hidden"));
+  document.querySelectorAll("[data-journal-day]").forEach(button => button.addEventListener("click", () => { journalDay = button.dataset.journalDay; journalPage = 1; document.querySelectorAll("[data-journal-day]").forEach(item => item.classList.toggle("active", item === button)); loadOperatorJournal(); }));
+  document.getElementById("operator-journal-search-btn").addEventListener("click", () => { journalPage = 1; loadOperatorJournal(); });
+  document.getElementById("operator-journal-search").addEventListener("keydown", event => { if (event.key === "Enter") { journalPage = 1; loadOperatorJournal(); } });
+  document.getElementById("operator-journal-status").addEventListener("change", () => { journalPage = 1; loadOperatorJournal(); });
+  document.getElementById("operator-journal-size").addEventListener("change", () => { journalPage = 1; loadOperatorJournal(); });
+  document.getElementById("operator-journal-prev").addEventListener("click", () => { if (journalPage > 1) { journalPage -= 1; loadOperatorJournal(); } });
+  document.getElementById("operator-journal-next").addEventListener("click", () => { if (journalPage < journalPages) { journalPage += 1; loadOperatorJournal(); } });
+  document.getElementById("operator-backup").addEventListener("click", saveOperatorBackup);
   document.querySelectorAll("[data-close='plate-modal']").forEach(button => button.addEventListener("click", closePlateModal));
   document.getElementById("plate-clear").addEventListener("click", () => { plateInput.value = ""; validatePlate(); plateInput.focus(); });
   plateInput.addEventListener("input", validatePlate);
@@ -316,7 +393,7 @@
   document.getElementById("btn-back-payment").addEventListener("click", cancelCurrent);
   payButton.addEventListener("click", confirmAndPrint);
   document.getElementById("btn-test-feed").addEventListener("click", feedPaper);
-  document.addEventListener("keydown", event => { if (event.key === "Escape" && !plateModal.classList.contains("hidden")) closePlateModal(); });
+  document.addEventListener("keydown", event => { if (event.key !== "Escape") return; if (!plateModal.classList.contains("hidden")) closePlateModal(); else document.getElementById("operator-journal-modal").classList.add("hidden"); });
 
   setClock(); setInterval(setClock, 1000);
   loadStats(); pollSync(); setInterval(pollSync, 12000);
