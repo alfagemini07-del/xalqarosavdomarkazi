@@ -20,11 +20,11 @@
   </header>
 
   <main id="screen-main" class="kiosk-screen active">
-    <section class="kiosk-hero"><span class="eyebrow-pill"><i></i> AVTOMATLASHTIRILGAN KIOSK TIZIMI</span><h1>Avtomobil Tortish <em>Tizimi</em></h1><p>Rasmga bosib mashina raqamini kiriting yoki tortishni boshlang</p></section>
-    <button id="btn-start" class="weighbridge-stage" type="button">
+    <section class="kiosk-hero"><span class="eyebrow-pill"><i></i> AVTOMATLASHTIRILGAN KIOSK TIZIMI</span><h1>Avtomobil Vazn O'lchash <em>Tizimi</em></h1><p>Vazn o'lchash jarayonini boshlash uchun avtomobil rasmini bosing</p></section>
+    <button id="btn-start" class="weighbridge-stage" type="button" aria-label="Avtomobil vaznini o'lchashni boshlash">
       <img src="{{ url_for('static', filename='truck.jpg') }}" alt="Tarozidagi yuk avtomobili"><span class="stage-shade"></span>
       <span class="weight-console"><span class="console-label">TAROZI INDIKATORI <b><i></i> BARQAROR</b></span><strong id="live-weight">0 <small>KG</small></strong><span class="weight-splits"><b>Brutto: <em>—</em></b><b>Tara: <em>—</em></b><b>Netto: <em>—</em></b></span></span>
-      <span class="barrier-chip">⌘ Shlagbaum: <b>NAZORATDA</b></span><span class="start-weighing">▣ <b>Mashina Raqamini Kiritish (Bosing)</b> →</span><span class="stage-hint"><i></i> Tortishni boshlash uchun ekranga yoki yuk mashinasiga bosing</span>
+      <span class="barrier-chip">⌘ Shlagbaum: <b>NAZORATDA</b></span>
     </button>
     <section class="kiosk-stats">
       <article><span class="metric-icon green">①</span><div><small>Bugun o'lchandi</small><strong><b id="today-count">—</b> ta avtomobil</strong></div><em>Jonli</em></article>
