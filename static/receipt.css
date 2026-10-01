@@ -11,6 +11,7 @@ dl { margin: 0; }
 dl div, .row, .major { display: flex; justify-content: space-between; gap: 12px; margin: 5px 0; }
 dt, dd { margin: 0; }
 .major { font-size: 16px; font-weight: bold; }
+.major.total { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #111; font-size: 17px; }
 .qr { width: 38mm; height: 38mm; margin: 10px auto; display: block; image-rendering: pixelated; }
 footer { font-size: 12px; }
 .print-actions { max-width: 80mm; margin: 14px auto; display: flex; gap: 10px; }

@@ -8,11 +8,16 @@
   const plateInput = document.getElementById("plate-input");
   const paidCheck = document.getElementById("paid-check");
   const payButton = document.getElementById("btn-pay");
+  const weightInput = document.getElementById("weight-input");
+  const entryService = document.getElementById("service-entry");
+  const reloadService = document.getElementById("service-reload");
   let current = null;
   let paymentMethod = "cash";
+  let servicePrices = { weighing: 30000, entry: 30000, reload: 30000 };
   let statsLoading = false;
   let lastSyncVersion = null;
   let syncLoading = false;
+  const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/\u00a0/g, " ");
 
   async function api(url, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -58,6 +63,8 @@
       document.getElementById("today-count").textContent = data.count;
       document.getElementById("today-revenue").textContent = data.total_fmt;
       document.getElementById("current-price-chip").textContent = `Narx: ${Number(data.current_price).toLocaleString("ru-RU")} so'm`;
+      servicePrices = { weighing: Number(data.current_price), entry: Number(data.entry_price), reload: Number(data.reload_price) };
+      if (current) renderPricing();
     } catch (error) {
       console.warn(error);
     } finally {
@@ -137,22 +144,59 @@
 
   function closePlateModal() { plateModal.classList.add("hidden"); }
 
+  function validWeight(showError = false) {
+    const value = Number(weightInput.value);
+    const valid = Number.isInteger(value) && value >= 1 && value <= 1000000;
+    const error = document.getElementById("weight-error");
+    error.classList.toggle("error", showError && !valid);
+    error.textContent = showError && !valid ? "Vaznni 1–1 000 000 kg oralig'ida kiriting" : "1 dan 1 000 000 kg gacha";
+    return valid;
+  }
+
+  function updatePayAvailability() {
+    payButton.disabled = !(paidCheck.checked && validWeight(false));
+  }
+
+  function renderPricing() {
+    if (!current) return;
+    const base = Number(current.weighing_fee ?? current.price ?? servicePrices.weighing);
+    const entry = entryService.checked ? Number(servicePrices.entry) : 0;
+    const reload = reloadService.checked ? Number(servicePrices.reload) : 0;
+    const total = base + entry + reload;
+    const weight = Math.max(0, Number(weightInput.value) || 0);
+    document.getElementById("payment-price").textContent = fmt(base);
+    document.getElementById("entry-service-price").textContent = fmt(servicePrices.entry);
+    document.getElementById("reload-service-price").textContent = fmt(servicePrices.reload);
+    document.getElementById("grand-total-value").textContent = fmt(total);
+    document.getElementById("preview-weight").textContent = fmt(weight);
+    document.getElementById("preview-weighing-fee").textContent = `${fmt(base)} so'm`;
+    document.getElementById("preview-entry-fee").textContent = `${fmt(entry)} so'm`;
+    document.getElementById("preview-reload-fee").textContent = `${fmt(reload)} so'm`;
+    document.getElementById("preview-entry-row").classList.toggle("hidden", !entryService.checked);
+    document.getElementById("preview-reload-row").classList.toggle("hidden", !reloadService.checked);
+    document.getElementById("preview-price").textContent = `${fmt(total)} so'm`;
+    updatePayAvailability();
+  }
+
   function setReceiptPreview(item) {
     document.getElementById("payment-plate").textContent = item.plate_number;
-    document.getElementById("payment-price").textContent = item.price_fmt;
     document.getElementById("payment-time").textContent = item.created_at;
     document.getElementById("payment-receipt-top").textContent = `Chek #${item.receipt_no}`;
     document.getElementById("preview-plate").textContent = item.plate_number;
-    document.getElementById("preview-price").textContent = `${item.price_fmt} UZS`;
     document.getElementById("preview-time").textContent = item.created_at;
     document.getElementById("preview-receipt").textContent = item.receipt_no;
     document.getElementById("payment-status-badge").textContent = "Kutilmoqda";
+    document.getElementById("payment-status-badge").className = "badge pending";
     document.getElementById("receipt-status").textContent = "KUTILMOQDA";
     paidCheck.checked = false;
+    weightInput.value = "";
+    entryService.checked = false;
+    reloadService.checked = false;
     payButton.disabled = true;
     paymentMethod = "cash";
     document.querySelectorAll(".payment-method").forEach(button => button.classList.toggle("selected", button.dataset.method === "cash"));
     document.getElementById("receipt-payment-type").textContent = "NAQD PUL";
+    renderPricing();
   }
 
   async function submitPlate() {
@@ -166,6 +210,7 @@
     try {
       const data = await api("/api/weighings", { method: "POST", body: JSON.stringify({ plate_number: plateInput.value.trim() }) });
       current = data.weighing;
+      if (data.service_prices) servicePrices = data.service_prices;
       closePlateModal();
       setReceiptPreview(current);
       showScreen(paymentScreen);
@@ -203,23 +248,31 @@
 
   async function confirmAndPrint() {
     if (!current || !paidCheck.checked) return;
+    if (!validWeight(true)) { weightInput.focus(); updatePayAvailability(); return; }
     const fallback = window.open("about:blank", "tarozi-receipt", "width=520,height=800");
     payButton.disabled = true;
     const original = payButton.textContent;
     payButton.textContent = "To'lov saqlanmoqda...";
     try {
-      const data = await api(`/api/weighings/${current.id}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod }) });
+      const weighingId = current.id;
+      const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, reload_service: reloadService.checked }) });
       document.getElementById("payment-status-badge").textContent = "To'langan";
       document.getElementById("payment-status-badge").className = "badge paid";
       document.getElementById("receipt-status").textContent = "TO'LANGAN";
+      document.getElementById("preview-weight").textContent = data.receipt.weight_fmt;
+      document.getElementById("preview-weighing-fee").textContent = `${data.receipt.weighing_fee_fmt} so'm`;
+      document.getElementById("preview-entry-fee").textContent = `${data.receipt.entry_fee_fmt} so'm`;
+      document.getElementById("preview-reload-fee").textContent = `${data.receipt.reload_fee_fmt} so'm`;
+      document.getElementById("preview-price").textContent = `${data.receipt.total_fmt} so'm`;
+      document.getElementById("grand-total-value").textContent = data.receipt.total_fmt;
+      if (fallback) fallback.location.href = `/receipt/${weighingId}`;
       payButton.textContent = "Chek chop etilmoqda...";
       try {
         const printed = await localPrint(data.receipt);
-        if (fallback) fallback.close();
         showToast(`Chek ${printed.printer || "printer"}ga yuborildi`);
       } catch (_agentError) {
-        if (fallback) fallback.location.href = `/receipt/${current.id}?autoprint=1`;
-        else window.location.href = `/receipt/${current.id}?autoprint=1`;
+        if (fallback) fallback.location.href = `/receipt/${weighingId}?autoprint=1`;
+        else window.location.href = `/receipt/${weighingId}?autoprint=1`;
         showToast("Lokal agent topilmadi — brauzer chop etish oynasi ochildi");
       }
       current = null;
@@ -255,7 +308,10 @@
     document.querySelectorAll(".payment-method").forEach(item => item.classList.toggle("selected", item === button));
     document.getElementById("receipt-payment-type").textContent = { cash: "NAQD PUL", card: "UZCARD / HUMO", bank: "HISOB RAQAM" }[paymentMethod];
   }));
-  paidCheck.addEventListener("change", () => { payButton.disabled = !paidCheck.checked; });
+  weightInput.addEventListener("input", () => { if (weightInput.value.length > 7) weightInput.value = weightInput.value.slice(0, 7); validWeight(false); renderPricing(); });
+  entryService.addEventListener("change", renderPricing);
+  reloadService.addEventListener("change", renderPricing);
+  paidCheck.addEventListener("change", updatePayAvailability);
   document.getElementById("btn-cancel").addEventListener("click", cancelCurrent);
   document.getElementById("btn-back-payment").addEventListener("click", cancelCurrent);
   payButton.addEventListener("click", confirmAndPrint);
