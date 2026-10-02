@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $pythonwExe)) {
 }
 
 Write-Host "1/5 - Printer kutubxonalarini tayyorlash" -ForegroundColor Cyan
-& $pythonExe -m pip install "pywin32>=311" "Pillow>=10,<13" "qrcode>=8.2,<9"
+& $pythonExe -m pip install "pywin32>=311" "Pillow>=10,<13" "qrcode>=8.2,<9" "reportlab>=4.2,<5"
 if ($LASTEXITCODE -ne 0) { throw "Printer kutubxonalari o'rnatilmadi" }
 
 Write-Host "2/5 - Lokal agent sozlamalari" -ForegroundColor Cyan

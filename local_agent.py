@@ -119,68 +119,18 @@ def escpos_qr(data: bytes, module_size: int = 5) -> bytes:
 
 
 def build_receipt(receipt: dict) -> bytes:
-    required = ("receipt_no", "plate_number", "price_fmt", "created_at")
-    missing = [key for key in required if not str(receipt.get(key, "")).strip()]
-    if missing:
-        raise ValueError("Chek ma'lumoti yetarli emas: " + ", ".join(missing))
-
-    esc = b"\x1b"
-    gs = b"\x1d"
-    width = 42
-
-    def center(text: object) -> bytes:
-        return ascii_bytes(text).center(width) + b"\n"
-
-    def line(left: object, right: object) -> bytes:
-        left_b = ascii_bytes(left)
-        right_b = ascii_bytes(right)
-        space = max(1, width - len(left_b) - len(right_b))
-        return left_b + b" " * space + right_b + b"\n"
-
-    qr_text = receipt.get("qr_text") or (
-        f"AIRITOM LOGISTICS CENTER MCHJ\n"
-        f"Chek: {receipt['receipt_no']}\n"
-        f"Mashina: {receipt['plate_number']}\n"
-        f"Sana: {receipt['created_at']}\n"
-        f"Narx: {receipt['price_fmt']} so'm"
-    )
-
-    data = bytearray()
-    data += esc + b"@"
-    data += esc + b"a\x01"
-    data += esc + b"E\x01" + esc + b"!\x10"
-    data += center("AIRITOM LOGISTICS")
-    data += center("CENTER MCHJ")
-    data += esc + b"!\x00" + esc + b"E\x00"
-    data += center("Avtomobil o'lchash cheki")
-    data += center("=" * width)
-    data += esc + b"a\x00"
-    data += line("Chek:", receipt["receipt_no"])
-    data += line("Sana:", receipt["created_at"])
-    data += center("-" * width)
-    data += esc + b"E\x01" + esc + b"!\x20"
-    data += line("Mashina:", receipt["plate_number"])
-    data += esc + b"!\x00"
-    data += line("Vazni:", f"{receipt.get('weight_fmt', '0')} kg")
-    data += center("-" * width)
-    data += line("Vazn o'lchash:", f"{receipt.get('weighing_fee_fmt', receipt['price_fmt'])} so'm")
-    if receipt.get("entry_service"):
-        data += line("Hududga kirish:", f"{receipt.get('entry_fee_fmt', '0')} so'm")
-    if receipt.get("reload_service"):
-        data += line("Qayta yuklash:", f"{receipt.get('reload_fee_fmt', '0')} so'm")
-    data += esc + b"E\x01"
-    data += line("JAMI:", f"{receipt.get('total_fmt', receipt['price_fmt'])} so'm")
-    data += esc + b"E\x00"
-    method = {"cash": "Naqd pul", "card": "Uzcard/Humo", "bank": "Hisob raqam"}.get(
-        receipt.get("payment_method"), "Naqd pul"
-    )
-    data += line("To'lov turi:", method)
-    data += line("Holat:", "To'landi")
-    data += esc + b"E\x00" + esc + b"a\x01"
-    data += b"\n" + escpos_qr(ascii_bytes(qr_text), module_size=5) + b"\n"
-    data += center("Rahmat!")
-    data += b"\n\n\n\n"
-    data += gs + b"V\x42\x00"
+    """Raster ESC/POS for explicitly configured compatible printers."""
+    image = build_receipt_image(receipt).convert("L")
+    image = image.point(lambda pixel: 0 if pixel < 180 else 255).convert("1")
+    width_bytes = (image.width + 7) // 8
+    pixels = image.tobytes()
+    data = bytearray(b"\x1b@\x1ba\x01")
+    # GS v 0: 1 means a black dot. PIL mode 1 uses 1 for white.
+    for y in range(0, image.height, 128):
+        height = min(128, image.height - y)
+        data += b"\x1dv0\x00" + width_bytes.to_bytes(2, "little") + height.to_bytes(2, "little")
+        data += bytes(byte ^ 255 for byte in pixels[y * width_bytes:(y + height) * width_bytes])
+    data += b"\n\n\n\x1dVB\x00"
     return bytes(data)
 
 
@@ -231,91 +181,18 @@ def print_raw(receipt: dict, config: dict) -> str:
 
 
 def build_receipt_image(receipt: dict):
-    """Render a complete 80 mm receipt as a monochrome bitmap for Windows drivers."""
-    required = ("receipt_no", "plate_number", "price_fmt", "created_at")
-    missing = [key for key in required if not str(receipt.get(key, "")).strip()]
-    if missing:
-        raise ValueError("Chek ma'lumoti yetarli emas: " + ", ".join(missing))
-    from PIL import Image, ImageDraw, ImageFont
-    import qrcode
-
-    width, margin = 576, 28
-    canvas = Image.new("L", (width, 1500), 255)
-    draw = ImageDraw.Draw(canvas)
-
-    def font(size: int, bold: bool = False):
-        candidates = [
-            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("arialbd.ttf" if bold else "arial.ttf"),
-            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / ("segoeuib.ttf" if bold else "segoeui.ttf"),
-        ]
-        for candidate in candidates:
-            try:
-                return ImageFont.truetype(str(candidate), size)
-            except OSError:
-                continue
-        return ImageFont.load_default()
-
-    normal, small, bold, title, large = font(25), font(21), font(27, True), font(34, True), font(39, True)
-    y = 24
-
-    def text_width(text: object, selected_font) -> int:
-        box = draw.textbbox((0, 0), str(text), font=selected_font)
-        return box[2] - box[0]
-
-    def centered(text: object, selected_font, gap: int = 8) -> None:
-        nonlocal y
-        value = str(text)
-        draw.text(((width - text_width(value, selected_font)) // 2, y), value, fill=0, font=selected_font)
-        y += (draw.textbbox((0, 0), value, font=selected_font)[3] + gap)
-
-    def pair(left: object, right: object, selected_font=normal, gap: int = 11) -> None:
-        nonlocal y
-        left_value, right_value = str(left), str(right)
-        draw.text((margin, y), left_value, fill=0, font=selected_font)
-        draw.text((width - margin - text_width(right_value, selected_font), y), right_value, fill=0, font=selected_font)
-        y += draw.textbbox((0, 0), "Ag", font=selected_font)[3] + gap
-
-    def divider() -> None:
-        nonlocal y
-        draw.line((margin, y, width - margin, y), fill=0, width=2)
-        y += 14
-
-    centered("TAROZI NAZORAT", title)
-    centered("AIRITOM LOGISTICS CENTER MCHJ", small)
-    centered("Avtomobil vazn o'lchash cheki", small, 14)
-    divider()
-    pair("Chek:", receipt["receipt_no"], small)
-    pair("Sana:", receipt["created_at"], small)
-    divider()
-    pair("Mashina:", receipt["plate_number"], large, 15)
-    pair("Tarozidagi vazni:", f"{receipt.get('weight_fmt', '0')} kg", bold)
-    divider()
-    pair("Vazn o'lchash:", f"{receipt.get('weighing_fee_fmt', receipt['price_fmt'])} so'm", small)
-    if receipt.get("entry_service"):
-        pair("Hududga kirish:", f"{receipt.get('entry_fee_fmt', '0')} so'm", small)
-    if receipt.get("reload_service"):
-        pair("Qayta yuklash:", f"{receipt.get('reload_fee_fmt', '0')} so'm", small)
-    divider()
-    pair("JAMI:", f"{receipt.get('total_fmt', receipt['price_fmt'])} so'm", bold, 15)
-    method = {"cash": "Naqd pul", "card": "Uzcard / Humo", "bank": "Hisob raqam"}.get(receipt.get("payment_method"), "Naqd pul")
-    pair("To'lov turi:", method, small)
-    pair("Holat:", "To'landi", small)
-    divider()
-    qr_text = receipt.get("qr_text") or f"Chek: {receipt['receipt_no']}\nMashina: {receipt['plate_number']}\nJami: {receipt['price_fmt']} so'm"
-    qr_builder = qrcode.QRCode(
-        version=None,
-        box_size=4,
-        border=2,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-    )
-    qr_builder.add_data(qr_text)
-    qr_builder.make(fit=True)
-    qr = qr_builder.make_image(fill_color="black", back_color="white").convert("L")
-    canvas.paste(qr, ((width - qr.width) // 2, y))
-    y += qr.height + 12
-    centered("QR ichida chek ma'lumotlari", small)
-    centered("Xizmatdan foydalanganingiz uchun rahmat!", small, 20)
-    return canvas.crop((0, 0, width, min(canvas.height, y + 24)))
+    from receipt_render import render_receipt
+    data = dict(receipt)
+    data.setdefault("company", "AIRITOM LOGISTICS CENTER MCHJ")
+    data.setdefault("operator", "—")
+    data.setdefault("weight_fmt", "0")
+    data.setdefault("weighing_fee_fmt", data.get("price_fmt", "0"))
+    data.setdefault("total_fmt", data.get("price_fmt", "0"))
+    data.setdefault("entry_service", False)
+    data.setdefault("reload_service", False)
+    data.setdefault("payment_method", "cash")
+    data.setdefault("qr_text", f"Chek: {data['receipt_no']}\nAvtomobil: {data['plate_number']}\nVazni: {data['weight_fmt']} kg\nJami: {data['total_fmt']} so'm")
+    return render_receipt(data)
 
 
 def print_windows_driver(receipt: dict, config: dict) -> str:

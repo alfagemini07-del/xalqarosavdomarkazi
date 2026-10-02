@@ -41,6 +41,7 @@ from psycopg_pool import ConnectionPool
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
+from receipt_render import receipt_view, receipt_pdf
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -198,6 +199,7 @@ app.jinja_env.globals["csrf_token"] = csrf_token
 
 @app.before_request
 def load_request_context():
+    g.style_nonce = secrets.token_urlsafe(18)
     g.request_started = time.perf_counter()
     g.user = None
     if request.endpoint in {"static", "health", "favicon"}:
@@ -254,7 +256,7 @@ def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "img-src 'self' data:; "
-        "style-src 'self'; "
+        f"style-src 'self' 'nonce-{g.style_nonce}'; "
         "script-src 'self'; "
         "connect-src 'self' http://127.0.0.1:17832; "
         f"frame-ancestors {frame_ancestors}; "
@@ -311,6 +313,10 @@ def clean_plate(value: str, strict: bool = True) -> tuple[str, str]:
     if not strict:
         plate = plate[:64]
     search = re.sub(r"[^0-9A-ZА-ЯЁЎҚҒҲ]", "", plate)
+    if strict and re.fullmatch(r"\d{2}[A-Z]\d{3}[A-Z]{2}", search):
+        plate = f"{search[:2]} {search[2]} {search[3:6]} {search[6:]}"
+    elif strict and re.fullmatch(r"\d{5}[A-Z]{3}", search):
+        plate = f"{search[:2]} {search[2:5]} {search[5:]}"
     return plate, search
 
 
@@ -402,6 +408,7 @@ def serialize_weighing(row: dict) -> dict:
         "operator": row.get("operator") or "—",
         "source": row.get("source") or "web",
         "payment_method": row.get("payment_method") or "cash",
+        "print_state": row.get("print_state") or "not_requested",
         "public_url": url_for("public_receipt", token=public_token, _external=True) if public_token else None,
     }
 
@@ -637,7 +644,7 @@ def receipt_page(weighing_id: int):
             abort(409)
         row = ensure_public_token(conn, row)
         payload = receipt_payload(row)
-    payload["qr_b64"] = make_qr_base64(payload["qr_text"])
+    payload = receipt_view(payload)
     return render_template(
         "receipt.html",
         receipt=payload,
@@ -664,7 +671,7 @@ def public_receipt(token: str):
     if not row:
         abort(404)
     payload = receipt_payload(row)
-    payload["qr_b64"] = make_qr_base64(payload["qr_text"])
+    payload = receipt_view(payload)
     return render_template(
         "receipt.html", receipt=payload, auto_print=False, embedded=False, public_view=True
     )
@@ -684,6 +691,16 @@ def api_today_stats():
             (today,),
         ).fetchone()
         service_prices = get_service_prices(conn)
+        personal = conn.execute(
+            """SELECT payment_method, COALESCE(SUM(price),0) AS amount FROM weighings
+            WHERE business_date=%s AND status='paid' AND created_by=%s GROUP BY payment_method""",
+            (today, g.user["id"]),
+        ).fetchall()
+        last = conn.execute(
+            """SELECT id, receipt_no FROM weighings WHERE created_by=%s AND status='paid'
+            AND business_date IN (%s,%s) ORDER BY paid_at DESC NULLS LAST, id DESC LIMIT 1""",
+            (g.user["id"], today, today - timedelta(days=1)),
+        ).fetchone()
     return jsonify(
         count=row["count"],
         total=row["total"],
@@ -691,6 +708,8 @@ def api_today_stats():
         current_price=service_prices["weighing"],
         entry_price=service_prices["entry"],
         reload_price=service_prices["reload"],
+        personal={item["payment_method"]: int(item["amount"]) for item in personal},
+        last_receipt=last,
     )
 
 
@@ -740,7 +759,8 @@ def operator_weighings():
     with get_pool().connection() as conn:
         rows = conn.execute(
             f"""
-            SELECT w.*, u.username AS operator, COUNT(*) OVER() AS full_count
+            SELECT w.*, u.username AS operator, COUNT(*) OVER() AS full_count,
+                (SELECT p.state FROM print_attempts p WHERE p.weighing_id=w.id ORDER BY p.created_at DESC LIMIT 1) AS print_state
             FROM weighings w
             LEFT JOIN users u ON u.id = w.created_by
             WHERE {' AND '.join(conditions)}
@@ -766,6 +786,9 @@ def operator_weighings():
 @login_required
 def create_weighing():
     data = request.get_json(silent=True) or {}
+    request_id = str(data.get("request_id") or "")
+    if request_id and not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", request_id):
+        return jsonify(success=False, message="So'rov identifikatori noto'g'ri"), 400
     try:
         plate, plate_search = clean_plate(data.get("plate_number", ""))
     except ValueError as exc:
@@ -774,6 +797,13 @@ def create_weighing():
     created = now_local()
     business_date = created.date()
     with get_pool().connection() as conn:
+        if request_id:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (request_id,))
+            existing = conn.execute("SELECT * FROM weighings WHERE client_request_id=%s", (request_id,)).fetchone()
+            if existing:
+                if existing["created_by"] != g.user["id"]:
+                    abort(409)
+                return jsonify(success=True, weighing=serialize_weighing(existing), service_prices=get_service_prices(conn))
         service_prices = get_service_prices(conn)
         price = service_prices["weighing"]
         public_token = secrets.token_urlsafe(24)
@@ -793,13 +823,13 @@ def create_weighing():
             INSERT INTO weighings (
                 receipt_no, plate_number, plate_search, price, status,
                 weighing_fee, created_at, business_date, created_by, source,
-                public_token
-            ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, 'web', %s)
+                public_token, client_request_id
+            ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, 'web', %s, %s)
             RETURNING *
             """,
             (
                 receipt_no, plate, plate_search, price, price, created,
-                business_date, g.user["id"], public_token,
+                business_date, g.user["id"], public_token, request_id or None,
             ),
         ).fetchone()
         row["operator"] = g.user["username"]
@@ -814,7 +844,7 @@ def create_weighing():
 @login_required
 def cancel_weighing(weighing_id: int):
     with get_pool().connection() as conn:
-        row = get_weighing(conn, weighing_id)
+        row = conn.execute("SELECT * FROM weighings WHERE id=%s FOR UPDATE", (weighing_id,)).fetchone()
         if not row or not can_access_weighing(row):
             return jsonify(success=False, message="Yozuv topilmadi"), 404
         if row["status"] == "paid":
@@ -824,7 +854,7 @@ def cancel_weighing(weighing_id: int):
                 """
                 UPDATE weighings
                 SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s AND status = 'pending'
                 """,
                 (weighing_id,),
             )
@@ -942,6 +972,58 @@ def receipt_data(weighing_id: int):
             return jsonify(success=False, message="To'lov tasdiqlanmagan"), 409
         row = ensure_public_token(conn, row)
     return jsonify(success=True, receipt=receipt_payload(row))
+
+
+@app.get("/api/weighings/<int:weighing_id>")
+@login_required
+def weighing_detail(weighing_id):
+    with get_pool().connection() as conn:
+        row = get_weighing(conn, weighing_id)
+    if not row or not can_access_weighing(row):
+        abort(404)
+    return jsonify(success=True, weighing=serialize_weighing(row))
+
+
+@app.get("/receipt/<int:weighing_id>/pdf")
+@login_required
+def download_receipt_pdf(weighing_id):
+    with get_pool().connection() as conn:
+        row = get_weighing(conn, weighing_id)
+    if not row or not can_access_weighing(row) or row["status"] != "paid":
+        abort(404)
+    return send_file(receipt_pdf(receipt_payload(row)), mimetype="application/pdf", as_attachment=True,
+                     download_name=f"chek-{weighing_id}.pdf")
+
+
+@app.route("/api/weighings/<int:weighing_id>/print", methods=["GET", "POST"])
+@login_required
+def receipt_print_status(weighing_id):
+    with get_pool().connection() as conn:
+        row = get_weighing(conn, weighing_id)
+        if not row or not can_access_weighing(row) or row["status"] != "paid":
+            abort(404)
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            try:
+                attempt_id = uuid.UUID(str(data.get("attempt_id", "")))
+            except ValueError:
+                return jsonify(success=False, message="Chop urinish raqami noto'g'ri"), 400
+            state = data.get("state")
+            method = data.get("method", "browser")
+            if state not in {"requested", "dialog_closed", "spooled", "confirmed", "failed"} or method not in {"browser", "agent"}:
+                abort(400)
+            conn.execute(
+                """INSERT INTO print_attempts (id,weighing_id,user_id,state,method) VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT(id) DO UPDATE SET state=EXCLUDED.state,updated_at=NOW()
+                WHERE print_attempts.weighing_id=EXCLUDED.weighing_id AND print_attempts.user_id=EXCLUDED.user_id
+                AND (EXCLUDED.state IN ('confirmed','failed') OR print_attempts.state NOT IN ('confirmed','failed'))""",
+                (attempt_id, weighing_id, g.user["id"], state, method),
+            )
+        latest = conn.execute("SELECT id,state,method,user_id FROM print_attempts WHERE weighing_id=%s ORDER BY created_at DESC LIMIT 1", (weighing_id,)).fetchone()
+        count = conn.execute("SELECT COUNT(*) AS n FROM print_attempts WHERE weighing_id=%s", (weighing_id,)).fetchone()["n"]
+    return jsonify(success=True, state=latest["state"] if latest else "not_requested", attempts=count,
+                   attempt_id=str(latest["id"]) if latest and latest["user_id"] == g.user["id"] else None,
+                   method=latest["method"] if latest else None)
 
 
 @app.get("/api/admin/dashboard")
@@ -1354,6 +1436,7 @@ def import_sqlite():
         daily_counter: dict[str, int] = {}
 
         with get_pool().connection() as conn:
+            import_users = {u["username"]: u["id"] for u in conn.execute("SELECT id,username FROM users").fetchall()}
             conn.execute(
                 """
                 INSERT INTO import_batches (id, filename, file_sha256, imported_by)
@@ -1463,7 +1546,7 @@ def import_sqlite():
                             business_date,
                             paid_at,
                             cancelled_at,
-                            g.user["id"],
+                            import_users.get(row.get("created_by_username"), g.user["id"]),
                             imported_source,
                             legacy_number(row.get("legacy_id") or source_id),
                             str(legacy_receipt)[:80],
@@ -1493,6 +1576,31 @@ def import_sqlite():
                         values,
                     )
                     inserted += max(0, pg_cursor.rowcount)
+            if "print_attempts" in table_names:
+                print_columns = {r[1] for r in legacy.execute('PRAGMA table_info("print_attempts")')}
+                if {"id","receipt_no","username","state","method","created_at","updated_at"} <= print_columns:
+                    print_cursor = legacy.execute('SELECT * FROM "print_attempts"')
+                    while True:
+                        print_rows = print_cursor.fetchmany(1000)
+                        if not print_rows:
+                            break
+                        records = []
+                        for item in print_rows:
+                            item = dict(item)
+                            if item["state"] not in {"requested","dialog_closed","spooled","confirmed","failed"} or item["method"] not in {"browser","agent"}:
+                                continue
+                            try:
+                                identifier = uuid.UUID(str(item["id"]))
+                                recorded = datetime.fromisoformat(item["created_at"])
+                                updated = datetime.fromisoformat(item["updated_at"])
+                            except (ValueError,TypeError):
+                                continue
+                            records.append((identifier,import_users.get(item["username"]),item["state"],item["method"],recorded,updated,item["receipt_no"]))
+                        with conn.cursor() as print_target:
+                            print_target.executemany(
+                                """INSERT INTO print_attempts(id,weighing_id,user_id,state,method,created_at,updated_at)
+                                SELECT %s,w.id,%s,%s,%s,%s,%s FROM weighings w WHERE w.receipt_no=%s AND w.status='paid'
+                                ON CONFLICT(id) DO NOTHING""", records)
             conn.execute(
                 """
                 UPDATE import_batches
@@ -1822,17 +1930,22 @@ def create_sqlite_backup(include_users: bool = True) -> str:
             );
             CREATE INDEX idx_backup_weighings_date ON weighings(date);
             CREATE INDEX idx_backup_weighings_plate ON weighings(plate_number);
+            CREATE TABLE print_attempts (
+                id TEXT PRIMARY KEY, receipt_no TEXT NOT NULL, username TEXT,
+                state TEXT NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             """
         )
         backup.executemany(
             "INSERT INTO metadata (key, value) VALUES (?, ?)",
             [
-                ("format", "TaroziKiosk backup v3"),
+                ("format", "TaroziKiosk backup v4"),
                 ("created_at", now_local().isoformat()),
                 ("timezone", str(APP_TIMEZONE)),
             ],
         )
         with get_pool().connection() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             if include_users:
                 users = conn.execute(
                     """
@@ -1894,6 +2007,14 @@ def create_sqlite_backup(include_users: bool = True) -> str:
                             for row in rows
                         ],
                     )
+            with conn.cursor(name=f"prints_{uuid.uuid4().hex}") as cursor:
+                cursor.execute("""SELECT p.*,w.receipt_no,u.username FROM print_attempts p
+                    JOIN weighings w ON w.id=p.weighing_id LEFT JOIN users u ON u.id=p.user_id ORDER BY p.created_at""")
+                while True:
+                    rows=cursor.fetchmany(2000)
+                    if not rows: break
+                    backup.executemany("INSERT INTO print_attempts VALUES (?,?,?,?,?,?,?)",
+                        [(str(r["id"]),r["receipt_no"],r["username"],r["state"],r["method"],r["created_at"].isoformat(),r["updated_at"].isoformat()) for r in rows])
         backup.commit()
         return path
     except Exception:
@@ -1961,7 +2082,7 @@ def clear_operational_data():
             """
         ).fetchone()
         conn.execute(
-            "TRUNCATE TABLE weighings, import_batches, daily_sequences RESTART IDENTITY"
+            "TRUNCATE TABLE print_attempts, weighings, import_batches, daily_sequences RESTART IDENTITY"
         )
     return jsonify(
         success=True,
@@ -2088,6 +2209,17 @@ def system_status():
 @backup_token_required
 def download_backup():
     return send_sqlite_backup()
+
+
+from reports import register_reports
+register_reports(app, get_pool, roles_required, now_local, parse_date, str(APP_TIMEZONE), COMPANY_NAME)
+
+
+@app.errorhandler(400)
+def bad_request(error):
+    if request.path.startswith("/api/"):
+        return jsonify(success=False, message=error.description), 400
+    return render_template("error.html", code=400, message=error.description), 400
 
 
 @app.errorhandler(413)

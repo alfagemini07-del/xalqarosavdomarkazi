@@ -98,3 +98,17 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     first_failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     blocked_until TIMESTAMPTZ
 );
+
+ALTER TABLE weighings ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_weighing_request ON weighings(client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS print_attempts (
+    id UUID PRIMARY KEY,
+    weighing_id BIGINT NOT NULL REFERENCES weighings(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    state TEXT NOT NULL CHECK (state IN ('requested','dialog_closed','spooled','confirmed','failed')),
+    method TEXT NOT NULL CHECK (method IN ('browser','agent'))
+);
+CREATE INDEX IF NOT EXISTS idx_print_weighing ON print_attempts(weighing_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_print_created ON print_attempts(created_at DESC);

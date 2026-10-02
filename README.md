@@ -189,6 +189,19 @@ Muvaffaqiyatli yangi backupdan so'ng shu papkadagi oldingi `* holatiga backup.db
 
 ## 8. Chek chiqarish
 
+2026-10-02 yangilanishi: matn, to'lovlar va QR `receipt_render.py` orqali **bitta PNG**ga chiziladi.
+Brauzer va Windows agenti shu chizmadan foydalanadi; printer matn shriftlarini alohida ishlamaydi.
+80 mm sahifada 72 mm bosma tasvir va 4 mm chetlar mavjud. PDF nusxa ham shu tasvir bilan yaratiladi.
+Chek balandligi serverda hisoblanadi, sahifa uslubi CSP nonce bilan ruxsat oladi.
+Browser print sozlamasida 80 mm printer qog'ozi, 100% masshtab va headers/footers o'chirilgan bo'lishi kerak.
+Qog'oz uzunligini fizik printer drayveri ham qo'llashi kerak; Windows/ESC-POS rejimi uchun agentni yangilang.
+
+Chop holatlari: so'ralgan, dialog yopilgan (natija noma'lum), printer navbatiga yuborilgan,
+operator tasdiqlagan yoki chiqmagan. `afterprint` hodisasi qog'oz chiqqanini isbotlamaydi.
+Tasdiqlash tugmalari brauzer cheki tagida turadi. Qayta chop hisoboti — urinishlar hisoboti.
+Manbalar: https://developer.mozilla.org/en-US/docs/Web/API/Window/afterprint_event
+va ESC/POS raster protokoli: https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/gs_lv_0.html
+
 To'lov tasdiqlanganda:
 
 1. Standart holatda chek brauzer orqali chiqariladi va `127.0.0.1`ga keraksiz so'rov yuborilmaydi.
@@ -199,6 +212,22 @@ To'lov tasdiqlanganda:
 
 Printer qog'ozini surish tugmasi ham lokal agent orqali ishlaydi.
 Dialogsız Windows printer rejimi kerak bo'lsa lokal agentni o'rnatib, Render'da `LOCAL_PRINTER_AGENT_ENABLED=true` qiling.
+
+## Operator qulayliklari va yangi hisobotlar
+
+- F2: yangi o'lchash yoki tugallanmagan operatsiyaga qaytish. Enter: keyingi maydon; to'lov tasdiqlangan bo'lsa saqlash. Esc: oynani yopish/formadan chiqish.
+- Qo'shimcha xizmatlarda 30 000 / 50 000 / 100 000 tezkor summalar.
+- Davlat raqami katta harfga va tanilgan O'zbekiston formatiga avtomatik keltiriladi.
+- Yashil to'lov tasdig'i, oxirgi chek tugmasi, operatorning naqd/karta/hisob-raqam tushumi.
+- Forma har foydalanuvchi va brauzer tabiga alohida sessionStorage'da saqlanadi. Sahifa yangilanganda serverdagi operatsiya tekshirilib tiklanadi; bu offline to'lov emas.
+- Takroriy yaratish so'rovi noyob request ID bilan qayta chek yaratmaydi. To'lov va bekor qilish bazada blokirovka bilan bajariladi.
+- **Tahlil va eksport**: soat, kun, hafta, oy, operator, to'lov usuli, xizmat, avtomobil, bekor qilingan chek va qayta chop urinishlari.
+- Operator/sana/to'lov filtrlari, 10–100 qatorli sahifalar. Daromad faqat to'langan operatsiyalardan; davr operatsiya yaratilgan sanasi bo'yicha.
+- Haqiqiy Excel `.xlsx` (summalar son), shriftlari ichiga joylangan PDF. Eksport butun filtr natijasini oladi. Render xotirasini himoyalash uchun Excel 20 000, PDF 2 000 qator bilan cheklangan; oshsa davrni toraytirish so'raladi, natija yashirincha kesilmaydi.
+- Kunlik kassa dalolatnomasi: bitta kun, operator, naqd/karta/bank, haqiqiy naqd, farq va imzo joylari. Bu yaratilgan paytdagi PDF; smenani bloklab yopish amali emas.
+
+Deploy uchun `requirements.txt`, `schema.sql`, `app.py`, yangi `receipt_render.py`, `reports.py`, `static/` va `templates/`ni birga yangilang. `schema.sql` qo'shimcha ustun/jadvallarni o'zi yaratadi; mavjud cheklar o'chirilmaydi. Tarixiy cheklar bo'yicha oldingi chop holati noma'lum, yangi urinishlar yangilanishdan boshlab qayd etiladi.
+Lokal agent ishlatilsa `local_agent.py`, `receipt_render.py`, `install_local_agent.ps1`ni ham yangilab, o'rnatuvchini qayta ishga tushiring.
 
 ## Rollar
 
