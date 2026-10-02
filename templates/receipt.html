@@ -1,33 +1,21 @@
 <!doctype html>
 <html lang="uz">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chek {{ receipt.receipt_no }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='receipt.css', v='20261001-3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='receipt.css', v='20261002-1') }}">
+  <style nonce="{{ g.style_nonce }}">@page { size: 80mm {{ receipt.paper_height_mm }}mm; margin: 0; }</style>
 </head>
-<body data-auto-print="{{ '1' if auto_print else '0' }}" data-embedded="{{ '1' if embedded else '0' }}">
-  <main class="receipt">
-    <header><h1>TAROZI NAZORAT</h1><strong>{{ receipt.company }}</strong><span>{{ 'Elektron chek' if public_view else "Avtomobil o'lchash cheki" }}</span></header>
-    <hr>
-    <dl>
-      <div><dt>Sana</dt><dd>{{ receipt.created_at }}</dd></div>
-      <div><dt>Chek raqami</dt><dd>{{ receipt.receipt_no }}</dd></div>
-    </dl>
-    <hr>
-    <div class="major"><span>Avtomobil</span><strong>{{ receipt.plate_number }}</strong></div>
-    <div class="major"><span>Tarozidagi vazni</span><strong>{{ receipt.weight_fmt }} kg</strong></div>
-    <hr>
-    <div class="row"><span>Vazn o'lchash</span><strong>{{ receipt.weighing_fee_fmt }} so'm</strong></div>
-    {% if receipt.entry_service %}<div class="row"><span>Hududga kirganlik</span><strong>{{ receipt.entry_fee_fmt }} so'm</strong></div>{% endif %}
-    {% if receipt.reload_service %}<div class="row"><span>Qayta yuklash</span><strong>{{ receipt.reload_fee_fmt }} so'm</strong></div>{% endif %}
-    <div class="major total"><span>Jami to'lov</span><strong>{{ receipt.total_fmt }} so'm</strong></div>
-    <div class="row"><span>To'lov turi</span><strong>{{ {'cash': 'Naqd pul', 'card': 'Uzcard / Humo', 'bank': 'Hisob raqam'}.get(receipt.payment_method, 'Naqd pul') }}</strong></div>
-    <div class="row"><span>Holat</span><strong>To'landi</strong></div>
-    <img class="qr" src="data:image/png;base64,{{ receipt.qr_b64 }}" alt="Chek ma'lumotlari QR kodi">
-    <footer><p>QR kodda mashina, vazn, vaqt va to'lov ma'lumotlari yozilgan.</p><p>Xizmatdan foydalanganingiz uchun rahmat!</p></footer>
-  </main>
-  {% if not embedded %}<div class="print-actions"><button id="btn-browser-print" type="button">Chop etish</button>{% if not public_view %}<button id="btn-close-print" type="button">Yopish</button>{% endif %}</div>{% endif %}
-  <script src="{{ url_for('static', filename='receipt.js', v='20261001-3') }}" defer></script>
-</body>
-</html>
+<body data-auto-print="{{ '1' if auto_print else '0' }}" data-embedded="{{ '1' if embedded else '0' }}" data-id="{{ receipt.id }}" data-csrf="{{ csrf_token() if not public_view else '' }}" data-public="{{ '1' if public_view else '0' }}">
+  <main class="receipt"><img id="receipt-raster" src="data:image/png;base64,{{ receipt.raster_b64 }}" alt="Chek {{ receipt.receipt_no }}. {{ receipt.plate_number }}. Vazni {{ receipt.weight_fmt }} kg. Jami {{ receipt.total_fmt }} so'm."></main>
+  <section class="print-actions">
+    <p id="print-status" role="status">Chek tayyorlanmoqda...</p>
+    <button id="btn-browser-print" type="button" disabled>Chop etish</button>
+    {% if not public_view %}
+    <a href="{{ url_for('download_receipt_pdf', weighing_id=receipt.id) }}">PDF nusxa</a>
+    <div id="print-confirmation" hidden><p>Qog'ozdagi chek to'liq chiqdimi?</p><button id="confirm-printed" type="button">Ha, to'liq chiqdi</button><button id="confirm-failed" type="button">Yo'q, chiqmadi</button></div>
+    {% endif %}
+    {% if not embedded and not public_view %}<button id="btn-close-print" type="button">Yopish</button>{% endif %}
+  </section>
+  <script src="{{ url_for('static', filename='receipt.js', v='20261002-1') }}" defer></script>
+</body></html>

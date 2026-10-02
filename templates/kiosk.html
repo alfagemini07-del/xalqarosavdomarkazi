@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tarozi terminali | {{ company }}</title>
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261001-3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261002-1') }}">
 </head>
-<body class="kiosk-page" data-csrf="{{ csrf_token() }}" data-role="{{ user.role }}" data-local-printer-agent="{{ '1' if local_printer_agent else '0' }}">
+<body class="kiosk-page" data-csrf="{{ csrf_token() }}" data-role="{{ user.role }}" data-user-id="{{ user.id }}" data-local-printer-agent="{{ '1' if local_printer_agent else '0' }}">
   <div class="industrial-grid"></div>
   <header class="terminal-header">
     <div class="terminal-brand"><span class="brand-symbol">⚖</span><div><strong>TAROZI TERMINALI</strong><small>{{ company }}</small></div><span class="terminal-id">TERMINAL #01</span></div>
@@ -20,6 +20,9 @@
   </header>
 
   <main id="screen-main" class="kiosk-screen active">
+    <div id="payment-success" class="payment-success hidden" role="status"><strong>✓ To'lov muvaffaqiyatli saqlandi</strong><span id="success-receipt"></span><span id="last-print-status">Chek hali tasdiqlanmagan</span></div>
+    <div class="operator-toolbar"><span>F2 — yangi o'lchash · Enter — davom etish · Esc — yopish</span><button id="last-receipt" class="button secondary" type="button" disabled>Oxirgi chekni qayta chiqarish</button></div>
+    <div class="operator-money"><div><small>Mening bugungi naqd tushumim</small><strong id="my-cash">—</strong></div><div><small>Mening bugungi karta tushumim</small><strong id="my-card">—</strong></div><div><small>Mening bugungi hisob-raqam tushumim</small><strong id="my-bank">—</strong></div></div>
     <section class="kiosk-hero"><span class="eyebrow-pill"><i></i> AVTOMATLASHTIRILGAN KIOSK TIZIMI</span><h1>Avtomobil Vazn O'lchash <em>Tizimi</em></h1><p>Vazn o'lchash jarayonini boshlash uchun avtomobil rasmini bosing</p></section>
     <button id="btn-start" class="weighbridge-stage" type="button" aria-label="Avtomobil vaznini o'lchashni boshlash">
       <img src="{{ url_for('static', filename='truck.jpg') }}" alt="Tarozidagi yuk avtomobili"><span class="stage-shade"></span>
@@ -67,6 +70,6 @@
   <div id="receipt-preview-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="receipt-preview-title"><div class="modal-card receipt-preview-card"><header><span class="modal-icon">▤</span><div><h2 id="receipt-preview-title">Chek chop etishga tayyor</h2><p>80 mm chek to'liq ko'rinishi. Chop etish oynasi avtomatik ochiladi.</p></div><button id="receipt-preview-close" class="modal-close" type="button">×</button></header><div id="receipt-frame-loading" class="receipt-frame-loading">Chek tayyorlanmoqda...</div><iframe id="receipt-preview-frame" title="Chop etiladigan chek" src="about:blank"></iframe><footer><button id="receipt-preview-finish" class="button secondary" type="button">Yopish</button><button id="receipt-preview-print" class="button success grow" type="button">▤ Chekni Chop Etish</button></footer></div></div>
 
   <div id="toast" class="toast hidden" role="status"><b id="toast-icon">✓</b><span id="toast-text"></span></div>
-<script src="{{ url_for('static', filename='app.js', v='20261001-3') }}" defer></script>
+<script src="{{ url_for('static', filename='app.js', v='20261002-1') }}" defer></script>
 </body>
 </html>

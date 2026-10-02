@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Boshqaruv paneli | Tarozi</title>
-  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}"><link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261001-3') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}"><link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261002-1') }}">
 </head>
 <body class="admin-page" data-csrf="{{ csrf_token() }}" data-role="{{ user.role }}" data-user-id="{{ user.id }}" data-default-tab="{{ default_tab }}" data-local-printer-agent="{{ '1' if local_printer_agent else '0' }}">
   <div class="industrial-grid"></div>
@@ -15,6 +15,7 @@
         {% if user.role == 'admin' %}<button class="nav-link active" data-tab="dashboard" type="button"><span>▦</span>Admin dashboard</button>{% endif %}
         {% if user.role == 'techadmin' %}<button class="nav-link active" data-tab="monitor" type="button"><span>◉</span>Techadmin dashboard</button><button class="nav-link" data-tab="users" type="button"><span>♙</span>Foydalanuvchilar</button>{% endif %}
         <button class="nav-link" data-tab="reports" type="button"><span>▥</span>Hisobotlar</button>
+        <button class="nav-link" data-tab="analytics" type="button"><span>▤</span>Tahlil va eksport</button>
         <button class="nav-link" data-tab="search" type="button"><span>⌕</span>Qidiruv</button>
         <button class="nav-link" data-tab="history" type="button"><span>◴</span>Oxirgi o'lchashlar</button>
         <button class="nav-link" data-tab="transfer" type="button"><span>⇅</span>Import va Backup</button>
@@ -41,6 +42,23 @@
           <article class="industrial-card table-card"><div class="section-heading"><div><h2>Kunlik hisobot reyestri</h2><p id="report-period-label">Tanlangan davr</p></div></div><div class="table-scroll"><table><thead><tr><th>Sana</th><th>O'lchashlar</th><th>Tushum</th><th>Kunlik o'rtacha</th></tr></thead><tbody id="report-body"></tbody></table></div><div class="pagination"><label>Sahifada <select id="report-page-size"><option value="10">10 ta</option><option value="15" selected>15 ta</option><option value="20">20 ta</option><option value="50">50 ta</option><option value="100">100 ta</option></select></label><span id="report-count-label">0 kun</span><button id="report-prev" type="button">Oldingi</button><b id="report-page-info">1 / 1</b><button id="report-next" type="button">Keyingi</button></div></article>
         </section>
 
+        <section id="tab-analytics" class="admin-tab hidden">
+          <header class="page-title"><div><span class="eyebrow">BARCHA KESIMLAR</span><h1>Tahlil va eksport</h1><p>Tushum faqat to'langan operatsiyalardan hisoblanadi. Sana — operatsiya yaratilgan kun.</p></div></header>
+          <article class="industrial-card table-card">
+            <div class="analytics-tools">
+              <label>Boshlanish<input id="analytics-start" type="date"></label><label>Tugash<input id="analytics-end" type="date"></label>
+              <label>Hisobot turi<select id="analytics-group"><option value="hour">Soatlik</option><option value="day" selected>Kunlik</option><option value="week">Haftalik</option><option value="month">Oylik</option><option value="operator">Operatorlar</option><option value="method">To'lov turi</option><option value="services">Xizmatlar</option><option value="vehicle">Eng ko'p kelgan avtomobillar</option><option value="cancelled">Bekor qilingan cheklar</option><option value="reprints">Qayta chop urinishlari</option></select></label>
+              <label>Operator<select id="analytics-operator"><option value="">Barchasi</option></select></label>
+              <label>To'lov<select id="analytics-method"><option value="">Barchasi</option><option value="cash">Naqd</option><option value="card">Karta</option><option value="bank">Hisob raqam</option></select></label>
+              <button id="analytics-load" class="button primary" type="button">Ko'rsatish</button>
+            </div>
+            <div class="analytics-export"><button class="button secondary" data-analytics-range="today" type="button">Bugun</button><button class="button secondary" data-analytics-range="week" type="button">7 kun</button><button class="button secondary" data-analytics-range="month" type="button">Joriy oy</button><button class="button success" data-analytics-export="xlsx" type="button">Excel .xlsx</button><button class="button primary" data-analytics-export="pdf" type="button">PDF</button></div>
+            <p id="analytics-error" class="analytics-error" role="status"></p><div id="analytics-summary" class="analytics-summary"></div><h2 id="analytics-title">Hisobot</h2>
+            <div class="table-scroll"><table><thead id="analytics-head"></thead><tbody id="analytics-body"></tbody></table></div>
+            <div class="pagination"><label>Sahifada<select id="analytics-size"><option>10</option><option>15</option><option selected>20</option><option>50</option><option>100</option></select></label><span id="analytics-count"></span><button id="analytics-prev" type="button">Oldingi</button><b id="analytics-page">1 / 1</b><button id="analytics-next" type="button">Keyingi</button></div>
+            <div class="analytics-closing"><h2>Kunlik kassa yopilish dalolatnomasi</h2><p>Bitta kunni va kerakli operatorni tanlang. To'lov filtri “Barchasi” bo'lsin.</p><div class="analytics-tools"><label>Kassadagi haqiqiy naqd pul (so'm)<input id="closing-cash" type="text" inputmode="numeric" placeholder="Masalan: 500 000"></label><button id="closing-download" class="button success" type="button">Dalolatnoma PDF</button></div><p class="muted">Yaratilgan paytdagi hisob va haqiqiy pul farqi, topshiruvchi hamda qabul qiluvchi imzosi uchun joy.</p></div>
+          </article>
+        </section>
         <section id="tab-search" class="admin-tab hidden">
           <header class="page-title"><div><span class="eyebrow">TEZKOR QIDIRUV</span><h1>Mashina Qidiruv va O'lchash Tarixi</h1><p>Davlat raqami, chek identifikatori yoki sana oralig'i bo'yicha izlang.</p></div><div class="title-actions"><button id="btn-refresh-search" class="button secondary compact" type="button">⟳ Yangilash</button><button id="btn-export-search" class="button primary compact" type="button">⇩ Excel eksport</button></div></header>
           <article class="industrial-card search-filters"><label class="grow">Mashina raqami yoki Chek ID<div class="input-with-prefix"><span>UZ</span><input id="search-plate" type="text" placeholder="01 A 777 BA yoki chek raqami"></div></label><label>Boshlanish sanasi<input id="search-start" type="date"></label><label>Tugash sanasi<input id="search-end" type="date"></label><label>To'lov holati<select id="search-status"><option value="">Barchasi</option><option value="paid">To'langan</option><option value="pending">Kutilmoqda</option><option value="cancelled">Bekor qilingan</option></select></label><button id="btn-search" class="button primary" type="button">⌕ Qidirish</button><button id="btn-reset-search" class="icon-button" type="button">⟳</button><div class="quick-search"><span>Tezkor namunalar:</span><button type="button" data-search-sample="01 A 777 BA">01 A 777 BA</button><button type="button" data-search-sample="10 882 AA">10 882 AA</button></div></article>
@@ -94,6 +112,7 @@
   <div id="password-modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card narrow"><header><div><h2>Parolni yangilash</h2><p id="password-user">—</p></div><button class="modal-close" data-close="password-modal" type="button">×</button></header><div class="modal-body"><label>Yangi parol<input id="reset-password" type="password" placeholder="Kamida 8 belgi"></label></div><footer><button class="button secondary" data-close="password-modal" type="button">Bekor qilish</button><button id="btn-reset-password" class="button primary" type="button">Parolni reset qilish</button></footer></div></div>
   {% if user.role == 'techadmin' %}<div id="clear-data-modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card narrow destructive-modal"><header><div><h2>Barcha operatsiyalarni o'chirish</h2><p>Bu amalni ortga qaytarib bo'lmaydi.</p></div><button class="modal-close" data-close="clear-data-modal" type="button">×</button></header><div class="modal-body"><div class="destructive-warning">Tarozi o'lchovlari, cheklar, to'lovlar va import tarixi butunlay o'chadi. Loginlar hamda narx sozlamalari saqlanadi. Avval backup olish tavsiya qilinadi.</div><label>Joriy techadmin paroli<input id="clear-data-password" type="password" autocomplete="current-password" placeholder="Parolingiz"></label><label>Tasdiqlash uchun <b>BARCHASINI OCHIRISH</b> deb yozing<input id="clear-data-confirmation" type="text" autocomplete="off" placeholder="BARCHASINI OCHIRISH"></label></div><footer><button class="button secondary" data-close="clear-data-modal" type="button">Bekor qilish</button><button id="btn-confirm-clear-data" class="button danger" type="button" disabled>Hammasini o'chirish</button></footer></div></div>{% endif %}
   <div id="toast" class="toast hidden" role="status"><b id="toast-icon">✓</b><span id="toast-text"></span></div>
-  <script src="{{ url_for('static', filename='admin.js', v='20261001-3') }}" defer></script>
+  <script src="{{ url_for('static', filename='admin.js', v='20261002-1') }}" defer></script>
+  <script src="{{ url_for('static', filename='reports.js', v='20261002-1') }}" defer></script>
 </body>
 </html>
