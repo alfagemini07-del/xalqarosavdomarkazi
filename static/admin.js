@@ -137,7 +137,18 @@
     document.getElementById("detail-print").classList.toggle("hidden", item.status !== "paid"); document.getElementById("detail-modal").classList.remove("hidden");
   }
 
-  async function localPrint(receipt) { const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 4000); try { const response = await fetch("http://127.0.0.1:17832/print", { method: "POST", mode: "cors", headers: { "Content-Type": "application/json" }, body: JSON.stringify(receipt), signal: controller.signal }); const data = await response.json().catch(() => ({})); if (!response.ok || !data.success) throw new Error(data.message || "Printer agenti xatosi"); return data; } finally { clearTimeout(timer); } }
+  async function localPrint(receipt) {
+    const attempt_id=crypto.randomUUID();
+    await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"requested",method:"agent"})});
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4500);
+    try {
+      const response=await fetch("http://127.0.0.1:17832/print",{method:"POST",mode:"cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(receipt),signal:controller.signal});
+      const data=await response.json().catch(()=>({}));if(!response.ok || !data.success)throw new Error(data.message || "Printer agenti xatosi");
+      await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"spooled",method:"agent"})}).catch(()=>showToast("Chek yuborildi, ammo chop jurnali saqlanmadi",true));
+      return data;
+    } catch(error) {await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"failed",method:"agent"})}).catch(()=>{});throw error;}
+    finally {clearTimeout(timer);}
+  }
   async function reprint(id, button) {
     setBusy(button, true, "..."); const fallback = window.open("about:blank", "tarozi-receipt", "width=520,height=800");
     try { const data = await api(`/api/weighings/${id}/receipt`); if (!localAgentEnabled) { if (fallback) fallback.location.href = `/receipt/${id}?autoprint=1`; else window.location.href = `/receipt/${id}?autoprint=1`; showToast("Brauzer chop etish oynasi ochildi"); return; } if (fallback) fallback.location.href = `/receipt/${id}`; try { const printed = await localPrint(data.receipt); showToast(`Chek ${printed.printer || "printer"}ga yuborildi`); } catch (_error) { if (fallback) fallback.location.href = `/receipt/${id}?autoprint=1`; else window.location.href = `/receipt/${id}?autoprint=1`; showToast("Brauzer chop etish oynasi ochildi"); } }
@@ -259,7 +270,7 @@
   document.getElementById("btn-refresh-dashboard")?.addEventListener("click", loadDashboard);
   document.getElementById("btn-report").addEventListener("click", () => { reportPage = 1; runReport(); }); document.querySelectorAll("[data-range]").forEach(button => button.addEventListener("click", () => { setReportRange(button.dataset.range); reportPage = 1; runReport(); }));
   document.getElementById("report-page-size").addEventListener("change", () => { reportPage = 1; runReport(); }); document.getElementById("report-prev").addEventListener("click", () => { if (reportPage > 1) { reportPage -= 1; runReport(); } }); document.getElementById("report-next").addEventListener("click", () => { if (reportPage < reportPages) { reportPage += 1; runReport(); } });
-  document.getElementById("btn-export-report").addEventListener("click", () => exportCsv("report")); document.getElementById("btn-print-report").addEventListener("click", () => window.print());
+  document.getElementById("btn-export-report").addEventListener("click", () => {const p=new URLSearchParams({start:document.getElementById("report-start").value,end:document.getElementById("report-end").value,group:"day"});window.location.href=`/api/admin/analytics/export/xlsx?${p}`;}); document.getElementById("btn-print-report").addEventListener("click", () => window.print());
   document.getElementById("btn-search").addEventListener("click", () => { searchPage = 1; doSearch(); }); document.getElementById("btn-refresh-search").addEventListener("click", () => doSearch()); document.getElementById("btn-export-search").addEventListener("click", () => exportCsv("search")); document.getElementById("btn-print-table").addEventListener("click", () => window.print());
   document.getElementById("search-plate").addEventListener("keydown", event => { if (event.key === "Enter") { searchPage = 1; doSearch(); } }); document.querySelectorAll("[data-search-sample]").forEach(button => button.addEventListener("click", () => { document.getElementById("search-plate").value = button.dataset.searchSample; searchPage = 1; doSearch(); }));
   document.getElementById("btn-reset-search").addEventListener("click", () => { ["search-plate", "search-start", "search-end"].forEach(id => { document.getElementById(id).value = ""; }); document.getElementById("search-status").value = ""; searchPage = 1; doSearch(); });

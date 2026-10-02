@@ -29,6 +29,12 @@
   let receiptPrintPending = false;
   let receiptPreviewUrl = "";
   let localAgentReady = false;
+  let operationBusy = false;
+  let restoringDraft = true;
+  let lastReceipt = null;
+  let createRequestId = null;
+  const draftKey = `tarozi-draft-v2-${document.body.dataset.userId}`;
+  const printLabels = {not_requested:"Hali chop etilmagan", requested:"Chop etish so'ralgan", dialog_closed:"Natija tasdiqlanmagan", spooled:"Printer navbatiga yuborilgan", confirmed:"Chek chiqqani tasdiqlangan", failed:"Chek chiqmagan"};
   const fmt = value => Number(value || 0).toLocaleString("ru-RU").replace(/[\u00a0\u202f]/g, " ");
 
   function moneyInputValue(input) {
@@ -88,6 +94,9 @@
       document.getElementById("today-revenue").textContent = data.total_fmt;
       document.getElementById("current-price-chip").textContent = `Narx: ${Number(data.current_price).toLocaleString("ru-RU")} so'm`;
       servicePrices = { weighing: Number(data.current_price), entry: Number(data.entry_price), reload: Number(data.reload_price) };
+      for (const method of ["cash", "card", "bank"]) document.getElementById(`my-${method}`).textContent = `${fmt(data.personal?.[method] || 0)} so'm`;
+      lastReceipt = data.last_receipt;
+      document.getElementById("last-receipt").disabled = !lastReceipt;
       if (current) renderPricing();
     } catch (error) {
       console.warn(error);
@@ -181,6 +190,7 @@
         const row = document.createElement("tr"); row.append(journalCell(item.receipt_no), journalCell(item.plate_number), journalCell(`${item.weight_fmt} kg`), journalCell(`${item.total_fmt} so'm`), journalCell(item.time));
         const state = document.createElement("td"); state.append(journalStatus(item.status)); row.append(state);
         const action = document.createElement("td");
+        if (item.status === "paid") { const label = document.createElement("small"); label.className="print-state"; label.textContent=printLabels[item.print_state] || "Hali chop etilmagan"; state.append(label); }
         if (item.status === "paid") { const link = document.createElement("a"); link.className = "button secondary journal-receipt-link"; link.href = `/receipt/${item.id}`; link.target = "_blank"; link.rel = "noopener"; link.textContent = "Chekni ko'rish"; action.append(link); } else action.textContent = "—";
         row.append(action); body.append(row);
       });
@@ -222,6 +232,9 @@
 
   function validatePlate() {
     plateInput.value = plateInput.value.toUpperCase().replace(/\s+/g, " ").replace(/[^0-9A-ZА-ЯЁЎҚҒҲ -]/g, "");
+    const plain = plateInput.value.replace(/[ -]/g, "");
+    if (/^\d{2}[A-Z]\d{3}[A-Z]{2}$/.test(plain)) plateInput.value=plain.replace(/^(\d{2})([A-Z])(\d{3})([A-Z]{2})$/, "$1 $2 $3 $4");
+    else if (/^\d{5}[A-Z]{3}$/.test(plain)) plateInput.value=plain.replace(/^(\d{2})(\d{3})([A-Z]{3})$/, "$1 $2 $3");
     const valid = plateInput.value.trim().length >= 2;
     const badge = document.getElementById("plate-validation");
     badge.classList.toggle("valid", valid);
@@ -230,7 +243,8 @@
   }
 
   function openPlateModal() {
-    plateInput.value = "";
+    if (operationBusy || restoringDraft) return;
+    if (current) { showScreen(paymentScreen); weightInput.focus(); return; }
     document.getElementById("plate-error").classList.add("hidden");
     validatePlate();
     plateModal.classList.remove("hidden");
@@ -250,7 +264,7 @@
   }
 
   function updatePayAvailability() {
-    payButton.disabled = !(
+    payButton.disabled = operationBusy || !(
       paidCheck.checked && validWeight(false) &&
       validServiceAmount(entryService, entryFeeInput, "entry-fee-error", false) &&
       validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", false)
@@ -318,6 +332,7 @@
   }
 
   async function submitPlate() {
+    if (operationBusy || restoringDraft) return;
     const button = document.getElementById("btn-submit-plate");
     const errorBox = document.getElementById("plate-error");
     errorBox.classList.add("hidden");
@@ -325,43 +340,58 @@
       errorBox.textContent = "Mashina raqamini to'liq kiriting"; errorBox.classList.remove("hidden"); plateInput.focus(); return;
     }
     button.disabled = true;
+    operationBusy = true;
+    createRequestId ||= crypto.randomUUID();
+    saveDraft();
     try {
-      const data = await api("/api/weighings", { method: "POST", body: JSON.stringify({ plate_number: plateInput.value.trim() }) });
+      const data = await api("/api/weighings", { method: "POST", body: JSON.stringify({ plate_number: plateInput.value.trim(), request_id:createRequestId }) });
       current = data.weighing;
+      if(current.status !== "pending") { current=null; clearDraft(); closePlateModal(); showToast("Bu operatsiya avval yakunlangan. Jurnaldan chekni oching."); return; }
       if (data.service_prices) servicePrices = data.service_prices;
       closePlateModal();
       setReceiptPreview(current);
       showScreen(paymentScreen);
+      saveDraft();
     } catch (error) {
       errorBox.textContent = error.message; errorBox.classList.remove("hidden");
     } finally {
       button.disabled = false;
+      operationBusy = false;
     }
   }
 
   async function cancelCurrent() {
+    if (operationBusy) return;
     if (!current) { showScreen(mainScreen); return; }
     const button = document.getElementById("btn-cancel");
     button.disabled = true;
+    operationBusy = true;
     try {
       await api(`/api/weighings/${current.id}/cancel`, { method: "POST" });
-      current = null; showScreen(mainScreen); loadStats(); showToast("Operatsiya bekor qilindi");
+      current = null; clearDraft(); showScreen(mainScreen); loadStats(); showToast("Operatsiya bekor qilindi");
     } catch (error) {
       showToast(error.message, true);
     } finally {
       button.disabled = false;
+      operationBusy = false;
     }
   }
 
   async function localPrint(receipt) {
+    const attempt_id=crypto.randomUUID();
+    await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"requested",method:"agent"})});
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
     try {
       const response = await fetch("http://127.0.0.1:17832/print", { method: "POST", mode: "cors", headers: { "Content-Type": "application/json" }, body: JSON.stringify(receipt), signal: controller.signal });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) throw new Error(data.message || "Lokal printer xatosi");
+      await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"spooled",method:"agent"})}).catch(()=>showToast("Chek printerga yuborildi, ammo chop jurnali saqlanmadi",true));
+      receiptPreviewFrame.dataset.agentAttempt=attempt_id;
+      try {receiptPreviewFrame.contentWindow.attachAgentAttempt?.(attempt_id);} catch (_) {}
       return data;
-    } finally { clearTimeout(timer); }
+    } catch(error) {await api(`/api/weighings/${receipt.id}/print`,{method:"POST",body:JSON.stringify({attempt_id,state:"failed",method:"agent"})}).catch(()=>{});throw error;}
+    finally { clearTimeout(timer); }
   }
 
   function printReceiptPreview() {
@@ -369,8 +399,8 @@
       const frameWindow = receiptPreviewFrame.contentWindow;
       const frameDocument = receiptPreviewFrame.contentDocument;
       if (!frameWindow || !frameDocument?.querySelector(".receipt")) throw new Error("Chek oynasi yuklanmagan");
-      frameWindow.focus();
-      frameWindow.print();
+      if (typeof frameWindow.printReceipt !== "function") throw new Error("Chek hali tayyor emas");
+      frameWindow.printReceipt();
     } catch (_error) {
       const directUrl = receiptPreviewUrl.replace("embedded=1", "autoprint=1");
       const popup = directUrl ? window.open(directUrl, "tarozi-receipt", "width=520,height=800") : null;
@@ -383,11 +413,13 @@
 
   function requestBrowserPrint() {
     if (receiptPreviewFrame.classList.contains("loading")) receiptPrintPending = true;
-    else setTimeout(printReceiptPreview, 120);
+    else printReceiptPreview();
   }
 
   function openReceiptPreview(weighingId, autoPrint = true) {
+    delete receiptPreviewFrame.dataset.agentAttempt;
     receiptPrintPending = autoPrint;
+    document.getElementById("receipt-frame-loading").textContent = "Chek tayyorlanmoqda...";
     document.getElementById("receipt-frame-loading").classList.remove("hidden");
     receiptPreviewFrame.classList.add("loading");
     receiptPreviewModal.classList.remove("hidden");
@@ -403,16 +435,22 @@
   }
 
   async function confirmAndPrint() {
-    if (!current || !paidCheck.checked) return;
+    if (operationBusy || !current || !paidCheck.checked) return;
     if (!validWeight(true)) { weightInput.focus(); updatePayAvailability(); return; }
     if (!validServiceAmount(entryService, entryFeeInput, "entry-fee-error", true)) { entryFeeInput.focus(); updatePayAvailability(); return; }
     if (!validServiceAmount(reloadService, reloadFeeInput, "reload-fee-error", true)) { reloadFeeInput.focus(); updatePayAvailability(); return; }
     payButton.disabled = true;
+    operationBusy = true;
     const original = payButton.textContent;
     payButton.textContent = "To'lov saqlanmoqda...";
     try {
       const weighingId = current.id;
       const data = await api(`/api/weighings/${weighingId}/pay`, { method: "POST", body: JSON.stringify({ payment_method: paymentMethod, weight_kg: Number(weightInput.value), entry_service: entryService.checked, entry_fee: entryService.checked ? moneyInputValue(entryFeeInput) : 0, reload_service: reloadService.checked, reload_fee: reloadService.checked ? moneyInputValue(reloadFeeInput) : 0 }) });
+      lastReceipt={id:weighingId,receipt_no:data.receipt.receipt_no};
+      document.getElementById("payment-success").classList.remove("hidden");
+      document.getElementById("success-receipt").textContent=`${data.receipt.plate_number} · ${data.receipt.total_fmt} so'm · Chek ${data.receipt.receipt_no}`;
+      document.getElementById("last-print-status").textContent="Chop natijasi hali tasdiqlanmagan";
+      clearDraft();
       document.getElementById("payment-status-badge").textContent = "To'langan";
       document.getElementById("payment-status-badge").className = "badge paid";
       document.getElementById("receipt-status").textContent = "TO'LANGAN";
@@ -441,6 +479,8 @@
       payButton.disabled = false;
     } finally {
       payButton.textContent = original;
+      operationBusy = false;
+      updatePayAvailability();
     }
   }
 
@@ -472,7 +512,8 @@
   document.getElementById("operator-backup").addEventListener("click", saveOperatorBackup);
   receiptPreviewFrame.addEventListener("load", () => {
     if (!receiptPreviewFrame.src.includes("/receipt/")) return;
-    const hasReceipt = Boolean(receiptPreviewFrame.contentDocument?.querySelector(".receipt"));
+    let hasReceipt = false;
+    try { hasReceipt = Boolean(receiptPreviewFrame.contentDocument?.querySelector("#receipt-raster")); } catch (_) {}
     if (!hasReceipt) {
       receiptPrintPending = false;
       document.getElementById("receipt-frame-loading").textContent = "Chek oynasi yuklanmadi. Chop etish tugmasini qayta bosing.";
@@ -480,6 +521,7 @@
       return;
     }
     document.getElementById("receipt-frame-loading").classList.add("hidden"); receiptPreviewFrame.classList.remove("loading");
+    if(receiptPreviewFrame.dataset.agentAttempt)receiptPreviewFrame.contentWindow.attachAgentAttempt?.(receiptPreviewFrame.dataset.agentAttempt);
     if (receiptPrintPending) { receiptPrintPending = false; setTimeout(printReceiptPreview, 500); }
   });
   document.getElementById("receipt-preview-print").addEventListener("click", requestBrowserPrint);
@@ -507,8 +549,70 @@
   document.getElementById("btn-back-payment").addEventListener("click", cancelCurrent);
   payButton.addEventListener("click", confirmAndPrint);
   document.getElementById("btn-test-feed").addEventListener("click", feedPaper);
-  document.addEventListener("keydown", event => { if (event.key !== "Escape") return; if (!receiptPreviewModal.classList.contains("hidden")) closeReceiptPreview(); else if (!plateModal.classList.contains("hidden")) closePlateModal(); else document.getElementById("operator-journal-modal").classList.add("hidden"); });
+  document.addEventListener("keydown", event => { if (event.key !== "Escape" || operationBusy) return; if (!receiptPreviewModal.classList.contains("hidden")) closeReceiptPreview(); else if (!plateModal.classList.contains("hidden")) closePlateModal(); else if (!document.getElementById("operator-journal-modal").classList.contains("hidden")) document.getElementById("operator-journal-modal").classList.add("hidden"); else if(current){saveDraft();showScreen(mainScreen);} });
 
+  function saveDraft() {
+    if(restoringDraft) return;
+    try { sessionStorage.setItem(draftKey, JSON.stringify({id:current?.id || null,plate:plateInput.value,requestId:createRequestId,weight:weightInput.value,entry:entryService.checked,entryFee:entryFeeInput.value,reload:reloadService.checked,reloadFee:reloadFeeInput.value,method:paymentMethod,paid:paidCheck.checked})); }
+    catch (_) { showToast("Brauzer vaqtincha saqlashni bloklagan; sahifani yangilamang",true); }
+  }
+  function clearDraft() {
+    createRequestId=null; plateInput.value="";
+    try {sessionStorage.removeItem(draftKey);} catch (_) {}
+  }
+  async function restoreDraft() {
+    try {
+      const draft=JSON.parse(sessionStorage.getItem(draftKey) || "null");
+      if(!draft) return;
+      plateInput.value=draft.plate || ""; createRequestId=draft.requestId || null; validatePlate();
+      if(draft.id) {
+        const data=await api(`/api/weighings/${draft.id}`);
+        if(data.weighing.status!=="pending") {clearDraft(); return;}
+        current=data.weighing; setReceiptPreview(current);
+        weightInput.value=draft.weight || "";
+        entryService.checked=Boolean(draft.entry); reloadService.checked=Boolean(draft.reload);
+        entryFeeInput.value=draft.entryFee || ""; reloadFeeInput.value=draft.reloadFee || "";
+        paymentMethod=["cash","card","bank"].includes(draft.method)?draft.method:"cash";
+        document.querySelectorAll(".payment-method").forEach(b=>b.classList.toggle("selected",b.dataset.method===paymentMethod));
+        document.getElementById("receipt-payment-type").textContent={cash:"NAQD PUL",card:"UZCARD / HUMO",bank:"HISOB RAQAM"}[paymentMethod];
+        document.getElementById("entry-fee-panel").classList.toggle("hidden",!entryService.checked);
+        document.getElementById("reload-fee-panel").classList.toggle("hidden",!reloadService.checked);
+        paidCheck.checked=Boolean(draft.paid); showScreen(paymentScreen); renderPricing();
+        showToast("Kiritilgan ma'lumotlar tiklandi");
+      }
+    } catch (_) { showToast("Saqlangan formani tiklab bo'lmadi. Aloqani tekshirib, sahifani yangilang.",true); }
+    finally {restoringDraft=false;}
+  }
+  for(const [panel,input] of [["entry-fee-panel",entryFeeInput],["reload-fee-panel",reloadFeeInput]]) {
+    const bar=document.createElement("div"); bar.className="fee-presets";
+    for(const amount of [30000,50000,100000]) {
+      const b=document.createElement("button"); b.type="button"; b.textContent=fmt(amount);
+      b.addEventListener("click",()=>{if(operationBusy)return; input.value=fmt(amount); input.dispatchEvent(new Event("input",{bubbles:true})); input.focus();}); bar.append(b);
+    }
+    document.getElementById(panel).append(bar);
+  }
+  [weightInput,entryFeeInput,reloadFeeInput,plateInput].forEach(input=>input.addEventListener("input",saveDraft));
+  plateInput.addEventListener("input",()=>{if(!operationBusy && !current) {createRequestId=null; saveDraft();}});
+  [paidCheck,entryService,reloadService].forEach(input=>input.addEventListener("change",saveDraft));
+  document.querySelectorAll(".payment-method").forEach(b=>b.addEventListener("click",saveDraft));
+  document.getElementById("last-receipt").addEventListener("click",()=>{if(lastReceipt)openReceiptPreview(lastReceipt.id,true);});
+  window.addEventListener("message",event=>{
+    if(event.origin!==location.origin || event.source!==receiptPreviewFrame.contentWindow || event.data?.type!=="receipt-status")return;
+    if(event.data.id===lastReceipt?.id)document.getElementById("last-print-status").textContent=printLabels[event.data.state] || "Natija noma'lum";
+  });
+  document.addEventListener("keydown",event=>{
+    if(event.repeat || operationBusy || restoringDraft)return;
+    if(event.key==="F2") {event.preventDefault(); if(!receiptPreviewModal.classList.contains("hidden"))closeReceiptPreview(); openPlateModal();}
+    if(event.key==="Enter" && !paymentScreen.classList.contains("hidden") && receiptPreviewModal.classList.contains("hidden") && event.target.tagName==="INPUT") {
+      event.preventDefault();
+      const fields=[weightInput,...(entryService.checked?[entryFeeInput]:[]),...(reloadService.checked?[reloadFeeInput]:[]),paidCheck];
+      const index=fields.indexOf(event.target);
+      if(index>=0 && index<fields.length-1)fields[index+1].focus();
+      else if(!payButton.disabled)confirmAndPrint();
+    }
+  });
+  window.addEventListener("pagehide",()=>{if(current || plateInput.value)saveDraft();});
+  restoreDraft();
   setClock(); setInterval(setClock, 1000);
   loadStats(); pollSync(); setInterval(pollSync, 12000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { pollSync(); loadStats(); } });
