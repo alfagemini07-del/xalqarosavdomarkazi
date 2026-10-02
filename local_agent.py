@@ -1,6 +1,7 @@
 """Windows local companion for driver/ESC-POS printing and daily SQLite backup.
 
 Commands:
+    AgentSetup.exe                  # grafik o'rnatuvchi
     python local_agent.py configure
     python local_agent.py serve
     python local_agent.py backup
@@ -15,6 +16,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -25,15 +27,28 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "local_agent_config.json"
-LOG_PATH = BASE_DIR / "local_agent.log"
+SOURCE_DIR = Path(__file__).resolve().parent
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+DATA_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TaroziKioskAgent"
+    if IS_FROZEN else SOURCE_DIR
+)
+CONFIG_PATH = DATA_DIR / "local_agent_config.json"
+LOG_PATH = DATA_DIR / "local_agent.log"
+INSTALLED_EXE = DATA_DIR / "TaroziPrinterAgent.exe"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_VALUE = "TaroziKioskPrinterAgent"
+DEFAULT_SITE_URL = "https://xalqaro-savdo-markazi.onrender.com"
 
 
 def setup_logging() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler, logging.StreamHandler()])
+    handlers = [handler]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
 
 
 def load_config() -> dict:
@@ -94,7 +109,159 @@ def configure() -> None:
     }
     Path(config["backup_folder"]).mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Saqlandi: {CONFIG_PATH}")
+    if sys.stdout is not None:
+        print(f"Saqlandi: {CONFIG_PATH}")
+
+
+def list_printers() -> tuple[list[str], str]:
+    try:
+        import win32print
+        flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+        names = sorted({str(item[2]) for item in win32print.EnumPrinters(flags) if item[2]})
+        default = win32print.GetDefaultPrinter() or ""
+        if default and default not in names:
+            names.insert(0, default)
+        return names, default
+    except Exception:
+        return [], ""
+
+
+def save_config(config: dict) -> None:
+    site_url = str(config.get("site_url", "")).strip().rstrip("/")
+    parsed = urlparse(site_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError("Sayt manzili https:// bilan boshlanishi kerak")
+    port = int(config.get("agent_port", 17832))
+    if not 1024 <= port <= 65535:
+        raise RuntimeError("Agent porti 1024–65535 oralig'ida bo'lishi kerak")
+    backup_folder = Path(str(config.get("backup_folder") or Path.home() / "Tarozi Backups")).expanduser().resolve()
+    backup_folder.mkdir(parents=True, exist_ok=True)
+    saved = {
+        "site_url": site_url,
+        "allowed_origin": f"{parsed.scheme}://{parsed.netloc}",
+        "backup_folder": str(backup_folder),
+        "backup_token": str(config.get("backup_token", "")).strip(),
+        "printer_name": str(config.get("printer_name", "")).strip(),
+        "print_mode": "escpos" if config.get("print_mode") == "escpos" else "windows",
+        "agent_port": port,
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = CONFIG_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, CONFIG_PATH)
+
+
+def register_startup(executable: Path) -> None:
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+        winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, f'"{executable}" serve')
+
+
+def register_daily_backup(executable: Path, enabled: bool) -> str:
+    task_name = "TaroziKiosk Daily Backup"
+    if not enabled:
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+        return ""
+    result = subprocess.run(
+        ["schtasks", "/Create", "/SC", "DAILY", "/ST", "00:05", "/TN", task_name,
+         "/TR", f'"{executable}" backup', "/F"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return "" if result.returncode == 0 else (result.stderr or result.stdout).strip()
+
+
+def install_executable(config: dict, test_print: bool = False) -> tuple[Path, str]:
+    if os.name != "nt" or not IS_FROZEN:
+        raise RuntimeError("O'rnatish uchun GitHub Actions yaratgan AgentSetup.exe faylini ishga tushiring")
+    save_config(config)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    source = Path(sys.executable).resolve()
+    target = INSTALLED_EXE.resolve()
+    if source != target:
+        try:
+            shutil.copy2(source, target)
+        except PermissionError as exc:
+            raise RuntimeError("Eski agent ishlayapti. Task Manager orqali TaroziPrinterAgent.exe ni yoping va qayta urinib ko'ring") from exc
+    register_startup(target)
+    schedule_warning = register_daily_backup(target, bool(str(config.get("backup_token", "")).strip()))
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen([str(target), "serve"], cwd=str(DATA_DIR), creationflags=creation_flags,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if test_print:
+        subprocess.run([str(target), "test-print"], cwd=str(DATA_DIR), creationflags=creation_flags,
+                       timeout=45, check=True)
+    return target, schedule_warning
+
+
+def installer_gui() -> int:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+
+    previous = {}
+    if CONFIG_PATH.exists():
+        try:
+            previous = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    printers, default_printer = list_printers()
+    root = tk.Tk()
+    root.title("Tarozi printer agentini o'rnatish")
+    root.geometry("610x510")
+    root.resizable(False, False)
+    root.option_add("*Font", ("Segoe UI", 10))
+    frame = ttk.Frame(root, padding=22)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(frame, text="Tarozi Printer Agenti", font=("Segoe UI Semibold", 20)).pack(anchor="w")
+    ttk.Label(frame, text="Bir marta sozlang — keyin cheklar brauzer oynasisiz avtomatik chiqadi.").pack(anchor="w", pady=(2, 18))
+
+    site = tk.StringVar(value=previous.get("site_url", DEFAULT_SITE_URL))
+    printer = tk.StringVar(value=previous.get("printer_name", default_printer))
+    mode = tk.StringVar(value=previous.get("print_mode", "windows"))
+    backup = tk.StringVar(value=previous.get("backup_folder", str(Path.home() / "Tarozi Backups")))
+    token = tk.StringVar(value=previous.get("backup_token", ""))
+    test = tk.BooleanVar(value=False)
+
+    def field(label, variable, values=None, secret=False):
+        ttk.Label(frame, text=label).pack(anchor="w", pady=(8, 4))
+        widget = ttk.Combobox(frame, textvariable=variable, values=values, state="readonly") if values else ttk.Entry(frame, textvariable=variable, show="*" if secret else "")
+        widget.pack(fill="x")
+        return widget
+
+    field("Render sayt manzili", site)
+    field("Chek printeri", printer, printers or [""])
+    field("Chop etish usuli", mode, ["windows", "escpos"])
+    ttk.Label(frame, text="Backup papkasi (ixtiyoriy token ishlatilsa)").pack(anchor="w", pady=(8, 4))
+    backup_row = ttk.Frame(frame); backup_row.pack(fill="x")
+    ttk.Entry(backup_row, textvariable=backup).pack(side="left", fill="x", expand=True)
+    ttk.Button(backup_row, text="Tanlash", command=lambda: backup.set(filedialog.askdirectory(initialdir=backup.get()) or backup.get())).pack(side="left", padx=(8, 0))
+    field("Avtomatik backup tokeni (ixtiyoriy)", token, secret=True)
+    ttk.Checkbutton(frame, text="O'rnatilgach test chek chiqarish", variable=test).pack(anchor="w", pady=12)
+    status = ttk.Label(frame, text="", foreground="#146c43"); status.pack(anchor="w")
+
+    def install():
+        button.config(state="disabled")
+        status.config(text="O'rnatilmoqda...")
+        root.update_idletasks()
+        try:
+            target, warning = install_executable({
+                "site_url": site.get(), "printer_name": printer.get(), "print_mode": mode.get(),
+                "backup_folder": backup.get(), "backup_token": token.get(), "agent_port": 17832,
+            }, test.get())
+            message = f"Agent o'rnatildi va ishga tushdi.\n\n{target}"
+            if warning:
+                message += "\n\nBackup vazifasi yaratilmagan: " + warning
+            messagebox.showinfo("Tayyor", message)
+            root.destroy()
+        except Exception as exc:
+            logging.exception("Installer failed")
+            status.config(text="O'rnatilmadi", foreground="#b42318")
+            messagebox.showerror("Xatolik", str(exc))
+            button.config(state="normal")
+
+    button = ttk.Button(frame, text="O'RNATISH", command=install)
+    button.pack(fill="x", ipady=8, pady=(8, 0))
+    root.mainloop()
+    return 0
 
 
 def ascii_bytes(value: object) -> bytes:
@@ -256,6 +423,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Private-Network", "true")
             self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
@@ -269,6 +437,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Vary", "Origin")
         self.end_headers()
@@ -409,10 +578,12 @@ def download_backup(config: dict) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Tarozi Kiosk Windows local agent")
-    parser.add_argument("command", choices=("configure", "serve", "backup", "test-print"))
+    parser.add_argument("command", nargs="?", default="install", choices=("install", "configure", "serve", "backup", "test-print"))
     args = parser.parse_args()
     setup_logging()
     try:
+        if args.command == "install":
+            return installer_gui()
         if args.command == "configure":
             configure()
             return 0
@@ -421,7 +592,8 @@ def main() -> int:
             serve(config)
         elif args.command == "backup":
             destination = download_backup(config)
-            print(f"Backup tayyor: {destination}")
+            if sys.stdout is not None:
+                print(f"Backup tayyor: {destination}")
         elif args.command == "test-print":
             sample = {
                 "receipt_no": "TEST/00001",
@@ -437,11 +609,13 @@ def main() -> int:
                 "created_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             }
             printer = print_receipt(sample, config)
-            print(f"Test chek yuborildi: {printer}")
+            if sys.stdout is not None:
+                print(f"Test chek yuborildi: {printer}")
         return 0
     except Exception as exc:
         logging.exception("Agent command failed")
-        print(f"XATO: {exc}", file=sys.stderr)
+        if sys.stderr is not None:
+            print(f"XATO: {exc}", file=sys.stderr)
         return 1
 
 

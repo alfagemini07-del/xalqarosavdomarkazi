@@ -86,7 +86,7 @@ Qolgan muhim qiymatlar `render.yaml`da tayyor:
 - `INITIAL_PRICE=30000`
 - `APP_TIMEZONE=Asia/Tashkent`
 - `COOKIE_SECURE=true`
-- `LOCAL_PRINTER_AGENT_ENABLED=false`
+- `LOCAL_PRINTER_AGENT_ENABLED=true` — `AgentSetup.exe` o'rnatilgan kompyuterlarda dialogsız chop; agent yo'q bo'lsa brauzer rejimi ishlaydi.
 - `SUPABASE_DB_LIMIT_BYTES=524288000`
 
 `SUPABASE_DB_LIMIT_BYTES` monitoringdagi “limit/qolgan joy” hisobiga ishlatiladi. Supabase tarifingizdagi real limit boshqacha bo'lsa shu qiymatni baytlarda almashtiring. Haqiqiy ishlatilgan hajm bevosita PostgreSQL `pg_database_size`dan olinadi.
@@ -141,7 +141,30 @@ Windows fayl nomida `:` belgisi mumkin emas. Shu sabab fayl nomi quyidagicha bo'
 01.10.2026 00-00 holatiga backup.db
 ```
 
-## 6. Windows lokal agentini o'rnatish
+## 6. Windows lokal agentini bitta EXE bilan o'rnatish
+
+GitHub repositoryga kod yuborilgach **Actions → Build Windows Agent → Run workflow** ni bosing.
+Ish tugagach `AgentSetup-windows` artifactini yuklab, ichidan `AgentSetup.exe`ni oling.
+Printer ulangan kompyuterda shu bitta faylni oching:
+
+1. Render sayt manzili tayyor holda turadi.
+2. Ro'yxatdan kerakli Windows printerni tanlang.
+3. Odatda chop usuli `windows`; faqat haqiqiy ESC/POS printerda `escpos` tanlanadi.
+4. Backup kerak bo'lsa papka va techadmin bergan tokenni kiriting; chop uchun token shart emas.
+5. **O'RNATISH** tugmasini bosing.
+
+Agent `%LOCALAPPDATA%\TaroziKioskAgent\TaroziPrinterAgent.exe` manziliga o'rnatiladi,
+joriy Windows foydalanuvchisi tizimga kirganda avtomatik ishga tushadi va `127.0.0.1:17832`da faqat
+sozlangan sayt so'rovlarini qabul qiladi. Python o'rnatish shart emas. Yangilangan EXE kodi
+`build_agent.ps1` orqali ham qo'lda yig'ilishi mumkin.
+
+Render Environment bo'limida `LOCAL_PRINTER_AGENT_ENABLED=true` bo'lishi shart. Muvaffaqiyatli agent chopida
+brauzerning chop oynasi ochilmaydi. Agent ishlamasa chekni yo'qotmaslik uchun brauzer chop oynasi zaxira yo'l sifatida ochiladi.
+
+Windows SmartScreen imzosiz, yangi yig'ilgan EXE uchun ogohlantirish berishi mumkin. Bu kod imzolash sertifikati
+yo'qligi sababli; EXE aynan o'zingizning GitHub Actions jarayoningizda shu repository kodidan yig'iladi.
+
+### Eski PowerShell usuli
 
 Bu qism sayt ochiladigan va termal printer ulangan kompyuterda bir marta bajariladi.
 
